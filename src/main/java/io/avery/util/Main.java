@@ -4,7 +4,18 @@ import java.util.Random;
 
 public class Main {
     public static void main(String[] args) {
-        forkShuffle();
+        removeLast();
+    }
+    
+    static void removeLast() {
+        ForkJoinList<Integer> list = new TrieForkJoinList<>();
+        for (int i = 0; i < 1000; i++) {
+            list.add(i);
+        }
+        list.fork();
+        for (int i = 0; i < 1000; i++) {
+            System.out.println(list.removeLast());
+        }
     }
     
     static void shuffle() {
