@@ -14,8 +14,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     private static final int SHIFT = 4;
     private static final int SPAN = 1 << SHIFT;
     private static final int MASK = SPAN-1;
-    private static final Object[] FULL_CHILDREN = new Object[SPAN];
-    private static final Node INITIAL_TAIL = new Node(new WeakReference<>(null), FULL_CHILDREN);
+    private static final Node INITIAL_TAIL = new Node(new WeakReference<>(null), new Object[SPAN]);
     
     private int size;
     private int tailSize;
@@ -48,17 +47,17 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         else {
             node = root;
             for (int shift = rootShift; shift > 0; shift -= SHIFT) {
-                int i = index >>> shift;
+                int childIdx = index >>> shift;
                 if (node instanceof SizedNode sn) {
                     int[] sizes = sn.sizeTable.sizes;
-                    while (sizes[i] <= index) {
-                        i++;
+                    while (sizes[childIdx] <= index) {
+                        childIdx++;
                     }
-                    if (i > 0) {
-                        index -= sizes[i-1];
+                    if (childIdx > 0) {
+                        index -= sizes[childIdx-1];
                     }
                 }
-                node = (Node) node.children[i & MASK];
+                node = (Node) node.children[childIdx & MASK];
             }
         }
         
@@ -68,26 +67,66 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     }
     
     @Override
+    public E set(int index, E element) {
+        Objects.checkIndex(index, size);
+        modCount++;
+        int tailOffset = tailOffset();
+        Node node;
+        
+        if (index >= tailOffset) {
+            index -= tailOffset;
+            node = tail = tail.ensureEditable(this);
+        }
+        else {
+            Object parent = this;
+            node = root;
+            int childIdx = -1;
+            
+            for (int shift = rootShift; shift > 0; shift -= SHIFT) {
+                node = node.ensureEditable(parent);
+                if (parent instanceof Node p) {
+                    parent = p.children[childIdx] = node;
+                }
+                else {
+                    parent = root = node;
+                }
+                
+                childIdx = index >>> shift;
+                if (node instanceof SizedNode sn) {
+                    int[] sizes = sn.sizeTable.sizes;
+                    while (sizes[childIdx] <= index) {
+                        childIdx++;
+                    }
+                    if (childIdx > 0) {
+                        index -= sizes[childIdx-1];
+                    }
+                }
+                
+                node = (Node) node.children[childIdx &= MASK];
+            }
+            
+            node = node.ensureEditable(parent);
+            if (parent instanceof Node p) {
+                p.children[childIdx] = node;
+            }
+            else {
+                root = node;
+            }
+        }
+        
+        @SuppressWarnings("unchecked")
+        E old = (E) node.children[index & MASK];
+        node.children[index & MASK] = element;
+        return old;
+    }
+    
+    @Override
     public boolean add(E e) {
         modCount++;
         addToTail(e);
         return true;
     }
     
-    @Override
-    public void add(int index, E element) {
-        rangeCheckForAdd(index);
-        modCount++;
-        
-        if (index >= tailOffset()) {
-            addIntoTail(index, element);
-        }
-        else {
-            throw new UnsupportedOperationException(); // TODO
-        }
-    }
-    
-    // TODO: Obviate with addIntoTail()
     private void addToTail(E e) {
         int oldTailSize = tailSize;
         Node oldTail = tail;
@@ -176,28 +215,28 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             rootShift += SHIFT;
         }
         else {
-            appendNodeThroughExistingPath(nodesToMutate, oldTail.ensureEditable(this), nodesVisited - nodesToMutate);
+            appendNodeThroughExistingPath(oldTail.ensureEditable(this), nodesToMutate, nodesVisited - nodesToMutate);
         }
     }
     
-    private void appendNodeThroughExistingPath(int prefixHeight, Node child, int suffixHeight) {
+    private void appendNodeThroughExistingPath(Node child, int prefixHeight, int suffixHeight) {
         Object parent = this;
-        Node curr = root;
+        Node node = root;
         int index = size-2;
         int childIdx = -1;
-        
         int i = 1;
+        
         for (int shift = rootShift; i <= prefixHeight && shift > 0; i++, shift -= SHIFT) {
-            curr = curr.ensureEditableWithLen(parent, curr.children.length + (i == prefixHeight ? 1 : 0));
+            node = node.ensureEditableWithLen(parent, node.children.length + (i == prefixHeight ? 1 : 0));
             if (parent instanceof Node p) {
-                parent = p.children[childIdx] = curr;
+                parent = p.children[childIdx] = node;
             }
             else {
-                parent = root = curr;
+                parent = root = node;
             }
             
-            if (curr instanceof SizedNode sn) {
-                SizeTable tab = sn.sizeTable = sn.sizeTable.ensureEditableWithLen(parent, curr.children.length);
+            if (node instanceof SizedNode sn) {
+                SizeTable tab = sn.sizeTable = sn.sizeTable.ensureEditableWithLen(parent, node.children.length);
                 int[] sizes = tab.sizes;
                 int offset = i == prefixHeight ? 2 : 1;
                 sizes[sizes.length-1] = sizes[sizes.length - offset] + SPAN;
@@ -210,26 +249,26 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 childIdx = (index >>> shift) & MASK;
             }
             
-            curr = (Node) curr.children[childIdx];
+            node = (Node) node.children[childIdx];
         }
         
         if (i == prefixHeight) {
-            curr = curr.ensureEditableWithLen(parent, curr.children.length+1);
+            node = node.ensureEditableWithLen(parent, node.children.length+1);
             if (parent instanceof Node p) {
-                parent = p.children[childIdx] = curr;
+                parent = p.children[childIdx] = node;
             }
             else {
-                parent = root = curr;
+                parent = root = node;
             }
         }
         
         // Finally, add the new child
-        curr = newPathToNode(parent, child, suffixHeight);
+        node = newPathToNode(parent, child, suffixHeight);
         if (parent instanceof Node p) {
-            p.children[childIdx] = curr;
+            p.children[childIdx] = node;
         }
         else {
-            root = curr;
+            root = node;
         }
     }
     
@@ -243,28 +282,28 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         return child;
     }
     
-    private void addIntoTail(int index, E e) {
-        int ts = tailSize;
-        if (ts < SPAN) {
-            // Existing tail is not full - insert element into existing tail.
-            int i = index & MASK;
-            (tail = tail.ensureEditable(this)).children[i] = e; // TODO: Around index
-            tailSize++;
-            size++;
-            return;
-        }
-        
-        // Existing tail is full - create a new tail and move existing tail under root.
-    }
-    
     @Override
     public int size() {
         return size;
     }
     
+    private void transferOwnership(Object to) {
+        if (tail.parent.refersTo(this)) {
+            tail.parent = new WeakReference<>(to);
+        }
+        if (root.parent.refersTo(this)) {
+            root.parent = new WeakReference<>(to);
+        }
+        if (root instanceof SizedNode sn && sn.sizeTable.parent.refersTo(this)) {
+            sn.sizeTable.parent = new WeakReference<>(to);
+        }
+    }
+    
     @Override
     public ForkJoinList<E> fork() {
-        return null;
+        // Disown any owned top-level objects, to force path-copying upon future mutations
+        transferOwnership(null);
+        return new TrieForkJoinList<>(size, tailSize, rootShift, root, tail);
     }
     
     @Override
@@ -276,6 +315,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     @Override
     public ForkJoinList<E> splice() {
         TrieForkJoinList<E> copy = new TrieForkJoinList<>(size, tailSize, rootShift, root, tail);
+        transferOwnership(copy);
         this.size = this.tailSize = this.rootShift = 0;
         this.root = null;
         this.tail = INITIAL_TAIL;
@@ -316,6 +356,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     //  - sizes array redundantly tracks 4-byte length (nothing we can do)
     //  - WeakReference is an extra 16-byte pointer to a pointer, for Node and SizeTable (nothing we can do)
     
+    // TODO: Make protected? Node is exposed to the protected constructor
     private static class Node {
         WeakReference<Object> parent;
         Object[] children;
@@ -330,7 +371,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         
         Node ensureEditableWithLen(Object expectedParent, int len) {
-            if (expectedParent == parent.get()) {
+            if (parent.refersTo(expectedParent)) {
                 if (children.length != len) {
                     children = Arrays.copyOf(children, len);
                 }
@@ -355,7 +396,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         
         @Override
         SizedNode ensureEditableWithLen(Object expectedParent, int len) {
-            if (expectedParent == parent.get()) {
+            if (parent.refersTo(expectedParent)) {
                 if (children.length != len) {
                     children = Arrays.copyOf(children, len);
                 }
@@ -379,7 +420,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         
         SizeTable ensureEditableWithLen(Object expectedParent, int len) {
-            if (expectedParent == parent.get()) {
+            if (parent.refersTo(expectedParent)) {
                 if (sizes.length != len) {
                     sizes = Arrays.copyOf(sizes, len);
                 }
