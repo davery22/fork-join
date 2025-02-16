@@ -8,5 +8,9 @@ public interface ForkJoinList<E> extends List<E> {
     void join(Collection<? extends E> other);
     ForkJoinList<E> splice();
     ForkJoinList<E> splice(Collection<? extends E> replacement);
-    ForkJoinList<E> reversed();
+    ForkJoinList<E> subList(int fromIndex, int toIndex);
+    
+    default ForkJoinList<E> reversed() {
+        return ReverseOrderForkJoinListView.of(this);
+    }
 }

@@ -1,10 +1,13 @@
 package io.avery.util;
 
 import java.lang.ref.WeakReference;
-import java.util.AbstractList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Objects;
+import java.util.*;
+
+// TODO: Implement RandomAccess?
+// TODO: can rootShift get too big? (ie shift off the entire index -> 0, making later elements unreachable)
+//  - I think the answer is "yes, but we'd still find later elements by linear searching a size table"
+// TODO: Right shifts can wrap! eg: (int >>> 35) == (int >>> 3)
+//  - Force result to 0 when shift is too big
 
 public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList<E> {
     private static final int MARGIN = 2;
@@ -20,18 +23,71 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     private Node tail;
     
     public TrieForkJoinList() {
-        this.size = this.tailSize = this.rootShift = 0;
-        this.root = null;
-        this.tail = INITIAL_TAIL;
+        size = tailSize = rootShift = 0;
+        root = null;
+        tail = INITIAL_TAIL;
     }
     
-    protected TrieForkJoinList(int size, int tailSize, int rootShift, Node root, Node tail) {
-        this.size = size;
-        this.tailSize = tailSize;
-        this.rootShift = rootShift;
-        this.root = root;
-        this.tail = tail;
+    public TrieForkJoinList(Collection<? extends E> c) {
+        this();
+        addAll(c);
     }
+    
+    protected TrieForkJoinList(TrieForkJoinList<? extends E> toCopy) {
+        size = toCopy.size;
+        tailSize = toCopy.tailSize;
+        rootShift = toCopy.rootShift;
+        root = toCopy.root;
+        tail = toCopy.tail;
+    }
+    
+    // add(index, element)
+    // addAll(index, collection) - AbstractList, but we can do better
+    // remove(index)
+    // removeAll(collection)
+    // replaceAll(collection)
+    // retainAll(collection)
+    // removeIf(predicate)
+    // toArray() - AbstractCollection, but we can do better(?)
+    // toArray(arr) - AbstractCollection, but we can do better(?)
+    // toArray(gen) - Collection, but we can do better(?)
+    // iterator()
+    // listIterator()
+    // listIterator(index)
+    // subList(from, to)
+    // spliterator()
+    // join()
+    
+    // -get(index)
+    // -set(index, element)
+    // -add(element)
+    // -clear()
+    // -reversed()
+    // -size()
+    // -fork()
+    // -splice()
+    // -splice(replacement)
+    
+    // -addAll(collection) - AbstractCollection
+    // -addFirst() - List
+    // -addLast() - List
+    // -contains(object) - AbstractCollection
+    // -containsAll(collection) - AbstractCollection
+    // -equals(object) - AbstractList
+    // -getFirst() - List
+    // -getLast() - List
+    // -hashCode() - AbstractList
+    // -indexOf() - AbstractList
+    // -isEmpty() - AbstractCollection
+    // -lastIndexOf() - AbstractList
+    // -remove(object) - AbstractCollection
+    // -removeFirst() - List
+    // -removeLast() - List
+    // -sort(comparator) - List
+    // -toString() - AbstractCollection
+    // -forEach(action) - Iterable
+    // -stream() - Collection
+    // -parallelStream() - Collection
     
     @Override
     public E get(int index) {
@@ -113,6 +169,26 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     }
     
     @Override
+    public void add(int index, E element) {
+        rangeCheckForAdd(index);
+        modCount++;
+        
+        if (index == size-1) {
+            addToTail(element);
+        }
+        else {
+            throw new UnsupportedOperationException(); // TODO
+        }
+    }
+    
+    @Override
+    public void clear() {
+        size = tailSize = rootShift = 0;
+        root = null;
+        tail = INITIAL_TAIL;
+    }
+    
+    @Override
     public E remove(int index) {
         Objects.checkIndex(index, size);
         modCount++;
@@ -123,6 +199,11 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         else {
             throw new UnsupportedOperationException(); // TODO
         }
+    }
+    
+    @Override
+    public ForkJoinList<E> subList(int fromIndex, int toIndex) {
+        throw new UnsupportedOperationException();
     }
     
     private E popFromTail() {
@@ -149,8 +230,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         // oldTailSize == 1 && oldSize > 1  -->  promote new tail
         int height = rootShift/SHIFT;
         if (height == 0) {
-            theTail = tail = root;
-            tailSize = theTail.children.length;
+            tailSize = (tail = root).children.length;
             root = null;
             return old;
         }
@@ -349,7 +429,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     public ForkJoinList<E> fork() {
         // Disown any owned top-level objects, to force path-copying upon future mutations
         transferOwnership(null);
-        return new TrieForkJoinList<>(size, tailSize, rootShift, root, tail);
+        return new TrieForkJoinList<>(this);
     }
     
     @Override
@@ -360,11 +440,11 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     
     @Override
     public ForkJoinList<E> splice() {
-        TrieForkJoinList<E> copy = new TrieForkJoinList<>(size, tailSize, rootShift, root, tail);
+        TrieForkJoinList<E> copy = new TrieForkJoinList<>(this);
         transferOwnership(copy);
-        this.size = this.tailSize = this.rootShift = 0;
-        this.root = null;
-        this.tail = INITIAL_TAIL;
+        size = tailSize = rootShift = 0;
+        root = null;
+        tail = INITIAL_TAIL;
         return copy;
     }
     
@@ -373,11 +453,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         ForkJoinList<E> copy = splice();
         join(replacement);
         return copy;
-    }
-    
-    @Override
-    public ForkJoinList<E> reversed() {
-        return null;
     }
     
     private int tailOffset() {
@@ -402,7 +477,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     //  - sizes array redundantly tracks 4-byte length (nothing we can do)
     //  - WeakReference is an extra 16-byte pointer to a pointer, for Node and SizeTable (nothing we can do)
     
-    // TODO: Make protected? Node is exposed to the protected constructor
     private static class Node {
         WeakReference<Object> parent;
         Object[] children;
