@@ -56,8 +56,10 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     // listIterator(index)
     // subList(from, to)
     // spliterator()
-    // join()
+    // join(collection)
+    // join(index, collection)
     
+    // TODO: Make sure we handle modCount
     // -get(index)
     // -set(index, element)
     // -add(element)
@@ -65,9 +67,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     // -reversed()
     // -size()
     // -fork()
-    // -splice()
-    // -splice(replacement)
     
+    // TODO: Some of these might need revisited just to handle modCount - see ArrayList
     // -addAll(collection) - AbstractCollection
     // -addFirst() - List
     // -addLast() - List
@@ -88,6 +89,15 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     // -forEach(action) - Iterable
     // -stream() - Collection
     // -parallelStream() - Collection
+    
+    
+    // rrb_concat
+    // concat_sub_tree
+    // rebalance
+    // create_concat_plan
+    // execute_concat_plan
+    // slice_left[_rec]
+    // slice_right[_rec]
     
     @Override
     public E get(int index) {
@@ -439,20 +449,9 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     }
     
     @Override
-    public ForkJoinList<E> splice() {
-        TrieForkJoinList<E> copy = new TrieForkJoinList<>(this);
-        transferOwnership(copy);
-        size = tailSize = rootShift = 0;
-        root = null;
-        tail = INITIAL_TAIL;
-        return copy;
-    }
-    
-    @Override
-    public ForkJoinList<E> splice(Collection<? extends E> replacement) {
-        ForkJoinList<E> copy = splice();
-        join(replacement);
-        return copy;
+    public void join(int index, Collection<? extends E> other) {
+        // TODO
+        throw new UnsupportedOperationException();
     }
     
     private int tailOffset() {

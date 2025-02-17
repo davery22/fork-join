@@ -332,20 +332,19 @@ class ReverseOrderForkJoinListView<E> implements ForkJoinList<E> {
     
     // ========== ForkJoinList ==========
     
+    public void join(Collection<? extends E> other) {
+        base.join(0, toCollectionReversed(other));
+    }
+    
+    @Override
+    public void join(int index, Collection<? extends E> other) {
+        int size = base.size();
+        checkClosedRange(index, size);
+        base.join(size - index, toCollectionReversed(other));
+    }
+    
     public ForkJoinList<E> fork() {
         return new ReverseOrderForkJoinListView<>(base.fork());
-    }
-    
-    public void join(Collection<? extends E> other) {
-        base.subList(0, 0).join(toCollectionReversed(other));
-    }
-    
-    public ForkJoinList<E> splice() {
-        return new ReverseOrderForkJoinListView<>(base.splice());
-    }
-    
-    public ForkJoinList<E> splice(Collection<? extends E> replacement) {
-        return new ReverseOrderForkJoinListView<>(base.splice(toCollectionReversed(replacement)));
     }
     
     public ForkJoinList<E> subList(int fromIndex, int toIndex) {
