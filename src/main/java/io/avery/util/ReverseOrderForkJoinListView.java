@@ -332,15 +332,14 @@ class ReverseOrderForkJoinListView<E> implements ForkJoinList<E> {
     
     // ========== ForkJoinList ==========
     
-    public void join(Collection<? extends E> other) {
-        base.join(0, toCollectionReversed(other));
+    public boolean join(Collection<? extends E> other) {
+        return base.join(0, toCollectionReversed(other));
     }
     
-    @Override
-    public void join(int index, Collection<? extends E> other) {
+    public boolean join(int index, Collection<? extends E> other) {
         int size = base.size();
         checkClosedRange(index, size);
-        base.join(size - index, toCollectionReversed(other));
+        return base.join(size - index, toCollectionReversed(other));
     }
     
     public ForkJoinList<E> fork() {
@@ -357,9 +356,9 @@ class ReverseOrderForkJoinListView<E> implements ForkJoinList<E> {
         if (collection instanceof SequencedCollection<T> sc) {
             return sc.reversed();
         }
-        ForkJoinList<T> list = new TrieForkJoinList<>();
-        list.join(collection);
-        return list.reversed();
+        @SuppressWarnings("unchecked")
+        T[] arr = (T[]) collection.toArray();
+        return Arrays.asList(reverse(arr));
     }
     
     // Utils
