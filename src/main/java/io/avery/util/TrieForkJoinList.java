@@ -248,32 +248,30 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         // Else, we edit the node (copying it if not owned)
         // So, we don't know whether we will copy until we get to the bottom (or a node with >1 child)
         
+        Id lastParentId = listId;
         Node[] path = new Node[height+1];
         path[0] = root;
         for (int i = 0; i < height; i++) {
+            // Track last owned node id, in case we can transfer ownership of new tail
+            lastParentId = lastParentId != null && path[i].parentId == lastParentId ? path[i].id() : null;
             path[i+1] = (Node) path[i].children[path[i].children.length-1];
         }
-        Node newTail = path[height];
         
+        Node newTail = path[height];
+        int newTailSize = newTail.children.length;
         Object lastSurvivingParent = this;
         Id lastSurvivingParentId = listId;
-        Id lastParentId = listId;
+        int lastSurvivingParentIdx = 0;
         int childIdx = -1;
-        int newTailSize = newTail.children.length;
-        boolean owned = true;
         
-        for (int i = 0, j = 0; ; i++) {
-            Node curr = path[i];
-            int len = curr.children.length;
-            owned = owned && curr.parentId == lastParentId;
-            lastParentId = curr.id();
-            
+        for (int i = 0; i < height; i++) {
             // We may remove this node if (len == 1) or (i == 0 and len <= 2)
             // Else, we know we will not be removing this node or its ancestors, so can ensureEditable on them
+            int len = path[i].children.length;
             if (len > 2 || (len > 1 && i > 0)) {
-                for (; j < i; j++) {
+                for (; lastSurvivingParentIdx < i; lastSurvivingParentIdx++) {
                     // Ensure the path up to current node
-                    Node child = path[j] = path[j].ensureEditable(lastSurvivingParentId);
+                    Node child = path[lastSurvivingParentIdx].ensureEditable(lastSurvivingParentId);
                     if (child instanceof SizedParentNode sn) {
                         (sn.sizes = sn.sizes.ensureEditable(lastSurvivingParentId)).inc(len-1, -newTailSize);
                     }
@@ -281,40 +279,29 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                     lastSurvivingParentId = child.id();
                     childIdx = child.children.length-1;
                 }
-                if (i == height-1) {
-                    Node child = path[j].ensureEditableWithLen(lastSurvivingParentId, path[j].children.length-1);
-                    setChild(lastSurvivingParent, childIdx, child);
-                    
-                    // Promote last node to tail
-                    tailSize = (tail = newTail.tryTransferOwnership(lastParentId, listId)).children.length;
-                    break;
-                }
-            }
-            else if (i == height-1) {
-                // Remove the path after last surviving node
-                Node oldRoot;
-                if (j == 0 && (oldRoot = root).children.length <= 2) {
-                    if (oldRoot.children.length == 2) {
-                        Node newRoot = (Node) oldRoot.children[0];
-                        root = oldRoot.parentId == listId ? newRoot.tryTransferOwnership(oldRoot.id(), listId) : newRoot;
-                        rootShift -= SHIFT;
-                    }
-                    else {
-                        root = null;
-                        rootShift = 0; // TODO: Needed?
-                    }
-                }
-                else {
-                    Node child = path[j].ensureEditableWithLen(lastSurvivingParentId, path[j].children.length-1);
-                    setChild(lastSurvivingParent, childIdx, child);
-                }
-                
-                // Promote last node to tail
-                tailSize = (tail = owned ? newTail.tryTransferOwnership(lastParentId, listId) : newTail).children.length;
-                break;
             }
         }
         
+        // Remove the path after last surviving node
+        Node oldRoot;
+        if (lastSurvivingParentIdx == 0 && (oldRoot = root).children.length <= 2) {
+            if (oldRoot.children.length == 2) {
+                Node newRoot = (Node) oldRoot.children[0];
+                root = oldRoot.parentId == listId ? newRoot.tryTransferOwnership(oldRoot.id(), listId) : newRoot;
+                rootShift -= SHIFT;
+            }
+            else {
+                root = null;
+                rootShift = 0; // TODO: Needed?
+            }
+        }
+        else {
+            Node child = path[lastSurvivingParentIdx].ensureEditableWithLen(lastSurvivingParentId, path[lastSurvivingParentIdx].children.length-1);
+            setChild(lastSurvivingParent, childIdx, child);
+        }
+        
+        // Promote last node to tail
+        tailSize = (tail = lastParentId != null ? newTail.tryTransferOwnership(lastParentId, listId) : newTail).children.length;
         return old;
         
 //        Node[] path = new Node[height+1];
