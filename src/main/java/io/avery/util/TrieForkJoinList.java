@@ -149,7 +149,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 if (shift == 0) {
                     break;
                 }
-                parentId = node.id();
                 childIdx = index >>> shift;
                 if (node instanceof SizedParentNode sn) {
                     Sizes sizes = sn.sizes;
@@ -160,6 +159,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                         index -= sizes.get(childIdx-1);
                     }
                 }
+                parentId = node.id();
                 node = (Node) node.children[childIdx &= MASK];
             }
         }
@@ -218,35 +218,41 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     private E popFromTail() {
         assert size > 0;
         
-        int oldSize = size;
-        int oldTailSize = tailSize;
         Node oldTail = tail;
+        int oldTailSize = tailSize;
         @SuppressWarnings("unchecked")
         E old = (E) oldTail.children[oldTailSize-1];
         
-        if (oldSize == 1 && oldTail.parentId != listId) {
-            tail = INITIAL_TAIL;
-            tailSize = size = 0;
-            return old;
-        }
-        
-        size--;
-        if (oldTailSize > 1 || oldSize == 1) {
+        if (oldTailSize > 1) {
             (tail = oldTail.ensureEditableWithLen(listId, SPAN)).children[--tailSize] = null;
-            return old;
+            size--;
+        }
+        else if (size == 1) {
+            if (oldTail.parentId != listId) {
+                tail = INITIAL_TAIL;
+            }
+            else {
+                (tail = oldTail.ensureEditableWithLen(listId, SPAN)).children[0] = null;
+            }
+            tailSize = size = 0;
+        }
+        else {
+            pullUpTail();
+            size--;
         }
         
-        // oldTailSize == 1 && oldSize > 1  -->  promote new tail
+        return old;
+    }
+    
+    // Updates tail, tailSize
+    // May update root, rootShift
+    private void pullUpTail() {
         int height = rootShift/SHIFT;
         if (height == 0) {
             tailSize = (tail = root).children.length;
             root = null;
-            return old;
+            return;
         }
-        
-        // If we remove a node's only child, we remove the node itself
-        // Else, we edit the node (copying it if not owned)
-        // So, we don't know whether we will copy until we get to the bottom (or a node with >1 child)
         
         Id lastParentId = listId;
         Node[] path = new Node[height+1];
@@ -257,34 +263,18 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             path[i+1] = (Node) path[i].children[path[i].children.length-1];
         }
         
-        Node newTail = path[height];
-        int newTailSize = newTail.children.length;
-        Object lastSurvivingParent = this;
-        Id lastSurvivingParentId = listId;
-        int lastSurvivingParentIdx = 0;
-        int childIdx = -1;
+        // Promote last node to tail
+        int newTailSize = tailSize = (tail = path[height].tryTransferOwnership(lastParentId, listId)).children.length;
         
-        for (int i = 0; i < height; i++) {
-            // We may remove this node if (len == 1) or (i == 0 and len <= 2)
-            // Else, we know we will not be removing this node or its ancestors, so can ensureEditable on them
-            int len = path[i].children.length;
-            if (len > 2 || (len > 1 && i > 0)) {
-                for (; lastSurvivingParentIdx < i; lastSurvivingParentIdx++) {
-                    // Ensure the path up to current node
-                    Node child = path[lastSurvivingParentIdx].ensureEditable(lastSurvivingParentId);
-                    if (child instanceof SizedParentNode sn) {
-                        (sn.sizes = sn.sizes.ensureEditable(lastSurvivingParentId)).inc(len-1, -newTailSize);
-                    }
-                    lastSurvivingParent = setChild(lastSurvivingParent, childIdx, child);
-                    lastSurvivingParentId = child.id();
-                    childIdx = child.children.length-1;
-                }
-            }
+        // Parent of last node lost a child. If that was its only child, it will be deleted, which may trigger cascading
+        // ancestor deletions. The deepest remaining ancestor will drop its last child, which means it must be owned,
+        // which means its ancestors must be owned.
+        int i = height-1;
+        while (i > 0 && path[i].children.length == 1) {
+            i--;
         }
-        
-        // Remove the path after last surviving node
         Node oldRoot;
-        if (lastSurvivingParentIdx == 0 && (oldRoot = root).children.length <= 2) {
+        if (i == 0 && (oldRoot = root).children.length <= 2) {
             if (oldRoot.children.length == 2) {
                 Node newRoot = (Node) oldRoot.children[0];
                 root = oldRoot.parentId == listId ? newRoot.tryTransferOwnership(oldRoot.id(), listId) : newRoot;
@@ -296,70 +286,39 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             }
         }
         else {
-            Node child = path[lastSurvivingParentIdx].ensureEditableWithLen(lastSurvivingParentId, path[lastSurvivingParentIdx].children.length-1);
-            setChild(lastSurvivingParent, childIdx, child);
+            Object parent = this;
+            Id parentId = listId;
+            int childIdx = -1;
+            for (int j = 0; j < i; j++) {
+                Node child = path[j].ensureEditable(parentId);
+                int nextChildIdx = child.children.length-1;
+                if (child instanceof SizedParentNode sn) {
+                    (sn.sizes = sn.sizes.ensureEditable(parentId)).inc(nextChildIdx, -newTailSize);
+                }
+                parent = setChild(parent, childIdx, child);
+                parentId = child.id();
+                childIdx = nextChildIdx;
+            }
+            Node child = path[i].ensureEditableWithLen(parentId, path[i].children.length-1);
+            setChild(parent, childIdx, child);
         }
-        
-        // Promote last node to tail
-        tailSize = (tail = lastParentId != null ? newTail.tryTransferOwnership(lastParentId, listId) : newTail).children.length;
-        return old;
-        
-//        Node[] path = new Node[height+1];
-//        path[0] = root;
-//        for (int i = 0; i < height; i++) {
-//            path[i+1] = (Node) path[i].children[path[i].children.length-1];
-//        }
-//        // TODO: No! Need to ensure parent is owned before we tryTransferOwnership.
-//        //  "owned" => parentId == parent.id, parent.parentId == grandparent.id ... ancestor.parentId == listId
-//        (theTail = tail = path[height]).tryTransferOwnership(path[height-1].id(), listId);
-//        theTailSize = tailSize = theTail.children.length;
-//        path[height] = null;
-//
-//        for (int i = height; i-- > 0; ) {
-//            Node curr = path[i];
-//            if (path[i+1] == null && curr.children.length == 1) {
-//                path[i] = null;
-//            }
-//            else if (i == 0 && path[i+1] == null && curr.children.length == 2) {
-//                path[i] = (Node) curr.children[0];
-//                rootShift -= SHIFT;
-//            }
-//            else {
-//                // TODO: Incorrect - parent can change on next iteration
-//                Object expectedParent = i == 0 ? this : path[i-1];
-//                int len = curr.children.length;
-//                if (path[i+1] == null) {
-//                    path[i] = curr.ensureEditableWithLen(expectedParent, --len);
-//                }
-//                else {
-//                    // Note: This only has an effect if we copied the i+1 node
-//                    (path[i] = curr.ensureEditableWithLen(expectedParent, len)).children[len-1] = path[i+1];
-//                    path[i+1].tryTransferOwnership(curr, path[i]);
-//                }
-//                if (path[i] instanceof SizedParentNode sn) {
-//                    (sn.sizes = sn.sizes.ensureEditable(expectedParent)).inc(len-1, -theTailSize);
-//                }
-//            }
-//        }
-//
-//        root = path[0];
-//
-//        return old;
     }
     
     private void addToTail(E e) {
         if (tailSize < SPAN) {
-            (tail = tail.ensureEditableWithLen(this, SPAN)).children[tailSize++] = e;
+            // Could check for INITIAL_TAIL here to skip copying, but that slows down the common case
+            (tail = tail.ensureEditableWithLen(listId, SPAN)).children[tailSize++] = e;
             size++;
             return;
         }
         
         pushDownTail();
-        (tail = new Node(new WeakReference<>(this), new Object[SPAN])).children[0] = e;
+        (tail = new Node(listId, new Object[SPAN])).children[0] = e;
         tailSize = 1;
         size++;
     }
     
+    // May update root, rootShift
     private void pushDownTail() {
         Node oldRoot = root;
         if (oldRoot == null) {
@@ -376,10 +335,10 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             Node curr = oldRoot;
             for (int index = size-1; shift > SHIFT; shift -= SHIFT) {
                 int childIdx;
-                if (curr instanceof SizedNode sn) {
+                if (curr instanceof SizedParentNode sn) {
                     childIdx = sn.children.length-1;
                     if (childIdx > 0) {
-                        index -= sn.sizeTable.sizes[childIdx-1];
+                        index -= sn.sizes.get(childIdx-1);
                     }
                 }
                 else {
@@ -418,17 +377,20 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         
         if (nodesToMutate == 0) {
+            Id newId = new Id();
             Node newRoot;
-            if (oldRoot instanceof SizedNode) {
-                SizeTable tab = new SizeTable(new WeakReference<>(this), new int[]{ size - tailSize, size });
-                newRoot = new SizedNode(new WeakReference<>(this), new Object[2], tab);
+            if (oldRoot instanceof SizedParentNode) {
+                Sizes sizes = Sizes.of(listId, rootShift + SHIFT, 2);
+                sizes.set(0, size - tailSize);
+                sizes.set(1, size);
+                newRoot = new SizedParentNode(newId, listId, new Object[2], sizes);
             }
             else {
-                newRoot = new Node(new WeakReference<>(this), new Object[2]);
+                newRoot = new ParentNode(newId, listId, new Object[2]);
             }
             newRoot.children[0] = oldRoot;
-            oldRoot.tryTransferOwnership(this, newRoot);
-            pushDownTailThroughNewPath(newRoot, 1, nodesVisited);
+            oldRoot.tryTransferOwnership(listId, newId);
+            pushDownTailThroughNewPath(newRoot, newId, 1, nodesVisited);
             root = newRoot;
             rootShift += SHIFT;
         }
@@ -440,43 +402,47 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     private void pushDownTailThroughExistingPath(int prefixHeight, int suffixHeight) {
         Node node = root;
         Object parent = this;
+        Id parentId = listId;
         int childIdx = -1;
         int index = size-1;
         int oldTailSize = tailSize;
         
         for (int i = 1, shift = rootShift; i <= prefixHeight; i++, shift -= SHIFT) {
-            node = node.ensureEditableWithLen(parent, node.children.length + (i == prefixHeight ? 1 : 0));
+            int newLen = node.children.length + (i == prefixHeight ? 1 : 0);
+            node = node.ensureEditableWithLen(parentId, newLen);
             parent = setChild(parent, childIdx, node);
             if (shift == 0) {
                 break;
             }
             if (node instanceof SizedParentNode sn) {
-                Sizes tab = sn.sizes = sn.sizes.ensureEditable(parent);
-                int[] sizes = tab.sizes;
+                Sizes sizes = sn.sizes = sn.sizes.ensureEditable(parentId);
                 int offset = i == prefixHeight ? 2 : 1;
-                sizes[sizes.length-1] = sizes[sizes.length - offset] + oldTailSize;
-                childIdx = sizes.length-1;
+                sizes.set(newLen-1, sizes.get(newLen - offset) + oldTailSize);
+                childIdx = newLen-1;
                 if (childIdx > 0) {
-                    index -= sizes[childIdx-1];
+                    index -= sizes.get(childIdx-1);
                 }
             }
             else {
                 childIdx = (index >>> shift) & MASK;
             }
+            parentId = node.id();
             node = (Node) node.children[childIdx];
         }
         
-        pushDownTailThroughNewPath(parent, childIdx, suffixHeight);
+        pushDownTailThroughNewPath(parent, parentId, childIdx, suffixHeight);
     }
     
-    private void pushDownTailThroughNewPath(Object parent, int childIdx, int height) {
+    private void pushDownTailThroughNewPath(Object parent, Id parentId, int childIdx, int height) {
         for (int i = 0; i < height; i++) {
-            Node curr = new Node(new WeakReference<>(parent), new Object[1]);
+            Id newId = new Id();
+            Node curr = new ParentNode(newId, parentId, new Object[1]);
             parent = setChild(parent, childIdx, curr);
+            parentId = newId;
             childIdx = 0;
         }
         setChild(parent, childIdx, tail);
-        tail.tryTransferOwnership(this, parent);
+        tail.tryTransferOwnership(listId, parentId);
     }
     
     private Node setChild(Object parent, int childIdx, Node child) {
@@ -494,9 +460,9 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         return size;
     }
     
-    private void transferOwnership(Object to) {
-        tail.tryTransferOwnership(this, to);
-        root.tryTransferOwnership(this, to);
+    private void transferOwnership(Id to) {
+        tail.tryTransferOwnership(listId, to);
+        root.tryTransferOwnership(listId, to);
     }
     
     @Override
@@ -601,7 +567,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             }
             
             int newTailSize = leftTailSize + rightTailSize;
-            Node leftTail = tail = tail.ensureEditableWithLen(this, SPAN);
+            Node leftTail = tail = tail.ensureEditableWithLen(listId, SPAN);
             
             if (newTailSize <= SPAN) {
                 // Merge tails
@@ -614,7 +580,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             // Fill left tail from right tail; Push down; Adopt remaining right tail
             pushDownTail();
             // TODO? Makes a new node - assumes right tail would need copied anyway
-            Node newTail = tail = new Node(new WeakReference<>(this), new Object[SPAN]);
+            Node newTail = tail = new Node(listId, new Object[SPAN]);
             int suffixSize = SPAN - leftTailSize;
             System.arraycopy(rightTail.children,  0, leftTail.children, leftTailSize, suffixSize);
             System.arraycopy(rightTail.children, suffixSize, newTail.children, 0, tailSize = rightTailSize - suffixSize);
@@ -634,10 +600,10 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         
         // To reduce wasted space, trim tail to size before push-down
         if (tail.children.length != tailSize) {
-            tail = tail.ensureEditableWithLen(this, tailSize);
+            tail = tail.ensureEditableWithLen(listId, tailSize);
         }
         pushDownTail();
-        root = concatSubTree(this, root, rootShift, right, right.root, right.rootShift, true, true);
+        root = concatSubTree(this, listId, root, rootShift, right, right.listId, right.root, right.rootShift, true, true);
         tail = right.tail;
         tailSize = right.tailSize;
         size += right.size;
@@ -655,30 +621,35 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     //      - "full children" => all size M (works for all levels), or no sized nodes (works for level != 0)
     //      - "no right sibling" => keep track of this as we go down the tree initially
     
-    private Node concatSubTree(Object leftParent, Node leftNode, int leftShift,
-                               Object rightParent, Node rightNode, int rightShift,
+    private Node concatSubTree(Object leftParent, Id leftParentId, Node leftNode, int leftShift,
+                               Object rightParent, Id rightParentId, Node rightNode, int rightShift,
                                boolean isTop, boolean isRightMost) {
         // TODO: Pipe parents down to ensureEditable; transfer ownership to new parents where applicable
         // TODO: Can we reuse existing nodes instead of returning new ones here?
         if (leftShift > rightShift) {
-            Node centerNode = concatSubTree(leftNode, (Node) leftNode.children[leftNode.children.length-1], leftShift - SHIFT, rightParent, rightNode, rightShift, false, isRightMost);
+            Id newLeftParentId = leftParentId != null ? leftNode.id() : null;
+            Node centerNode = concatSubTree(leftNode, newLeftParentId, (Node) leftNode.children[leftNode.children.length-1], leftShift - SHIFT, rightParent, rightParentId, rightNode, rightShift, false, isRightMost);
             return rebalance(leftNode, centerNode, null, leftShift, isTop, isRightMost);
         }
         if (leftShift < rightShift) {
-            Node centerNode = concatSubTree(leftParent, leftNode, leftShift, rightNode, (Node) rightNode.children[0], rightShift - SHIFT, false, isRightMost && rightNode.children.length == 1);
+            Id newRightParentId = rightParentId != null ? rightNode.id() : null;
+            Node centerNode = concatSubTree(leftParent, leftParentId, leftNode, leftShift, rightNode, newRightParentId, (Node) rightNode.children[0], rightShift - SHIFT, false, isRightMost && rightNode.children.length == 1);
             return rebalance(null, centerNode, rightNode, rightShift, isTop, isRightMost);
         }
         if (leftShift > 0) {
-            Node centerNode = concatSubTree(leftNode, (Node) leftNode.children[leftNode.children.length-1], leftShift - SHIFT, rightNode, (Node) rightNode.children[0], rightShift - SHIFT, false, isRightMost && rightNode.children.length == 1);
+            Id newLeftParentId = leftParentId != null ? leftNode.id() : null;
+            Id newRightParentId = rightParentId != null ? rightNode.id() : null;
+            Node centerNode = concatSubTree(leftNode, newLeftParentId, (Node) leftNode.children[leftNode.children.length-1], leftShift - SHIFT, rightNode, newRightParentId, (Node) rightNode.children[0], rightShift - SHIFT, false, isRightMost && rightNode.children.length == 1);
             return rebalance(leftNode, centerNode, rightNode, leftShift, isTop, isRightMost);
         }
         Node node;
         if (isTop) {
             int leftSize = leftNode.children.length, rightSize = rightNode.children.length, mergedSize = leftSize + rightSize;
             if (mergedSize == SPAN + SPAN) {
-                node = new Node(new WeakReference<>(leftParent), new Object[]{ leftNode, rightNode });
-                leftNode.tryTransferOwnership(leftParent, node);
-                rightNode.tryTransferOwnership(rightParent, node);
+                Id newId = new Id();
+                node = new ParentNode(newId, leftParentId, new Object[]{ leftNode, rightNode });
+                leftNode.tryTransferOwnership(leftParentId, newId);
+                rightNode.tryTransferOwnership(rightParentId, newId);
                 return node;
             }
             SizedParentNode sn;
@@ -689,26 +660,28 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 //  We know that right.rootShift == 0 and right.root != null, so rightSize >= SPAN
                 //  So mergedSize = leftSize + rightSize >= 1 + SPAN > SPAN ??
                 //  Literature implied that slicing might mess things up ??
-                leftNode = leftNode.ensureEditableWithLen(leftParent, mergedSize);
+                leftNode = leftNode.ensureEditableWithLen(leftParentId, mergedSize);
                 System.arraycopy(rightNode.children, 0, leftNode.children, leftSize, rightSize);
                 if (mergedSize == SPAN) {
                     return leftNode;
                 }
                 // Need another level with a size table just to indicate that the tree is not leftwise dense.
-                Sizes sizes = Sizes.of(this, SHIFT, 1);
-                sn = new SizedParentNode(this, new Object[]{ leftNode }, sizes);
-                leftNode.tryTransferOwnership(leftParent, sn);
+                Id newId = new Id();
+                Sizes sizes = Sizes.of(leftParentId, SHIFT, 1);
+                sn = new SizedParentNode(newId, leftParentId, new Object[]{ leftNode }, sizes);
+                leftNode.tryTransferOwnership(leftParentId, newId);
             }
             else {
-                Sizes sizes = Sizes.of(this, SHIFT, 2);
-                sn = new SizedParentNode(this, new Object[]{ leftNode, rightNode }, sizes);
-                leftNode.tryTransferOwnership(leftParent, sn);
-                rightNode.tryTransferOwnership(rightParent, sn);
+                Id newId = new Id();
+                Sizes sizes = Sizes.of(leftParentId, SHIFT, 2);
+                sn = new SizedParentNode(newId, leftParentId, new Object[]{ leftNode, rightNode }, sizes);
+                leftNode.tryTransferOwnership(leftParentId, newId);
+                rightNode.tryTransferOwnership(rightParentId, newId);
             }
             setSizes(sn, rootShift = SHIFT);
             return sn;
         }
-        return new Node(new WeakReference<>(null), new Object[]{ leftNode, rightNode }); // TODO: set children parents
+        return new Node(null, new Object[]{ leftNode, rightNode }); // TODO: set children parents -- this Node will be unwrapped
     }
     
     private static class RebalanceState {
@@ -982,8 +955,10 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             return ensureEditable(expectedParentId);
         }
         
+        // TODO: Maybe use an UNUSED_ID object instead of null-checking?
+        //  But that might accidentally transfer ownership from an actual null parentId
         Node tryTransferOwnership(Id from, Id to) {
-            if (parentId == from) {
+            if (parentId == from && from != null) {
                 parentId = to;
             }
             return this;
