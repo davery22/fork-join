@@ -32,7 +32,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     
     public TrieForkJoinList(Collection<? extends E> c) {
         this();
-        addAll(c);
+        addAll(c); // TODO: Avoid copying - we know we are not aliased
     }
     
     protected TrieForkJoinList(TrieForkJoinList<? extends E> toCopy) {
@@ -43,14 +43,13 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         tail = toCopy.tail;
     }
     
-    // add(index, element)
+    // add(index, element) - specialized self-concat, unless after tailOffset
     // addAll(collection) - Use collection.toArray()
-    // addAll(index, collection) - Use collection.toArray()
-    // remove(index)
-    // removeAll(collection)
-    // replaceAll(collection)
-    // retainAll(collection)
-    // removeIf(predicate)
+    // addAll(index, collection) - Use collection.toArray(), or join(index, new [owned] TrieForkJoinList<>(collection)), unless after tailOffset
+    // remove(index) - removeRange, unless after tailOffset
+    // removeAll(collection) - removeRange
+    // retainAll(collection) - removeRange
+    // removeIf(predicate) - bitset + listIterator + removeRange
     // toArray() - AbstractCollection, but we can do better(?)
     // toArray(arr) - AbstractCollection, but we can do better(?)
     // toArray(gen) - Collection, but we can do better(?)
@@ -72,6 +71,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     // -fork()
     
     // TODO: Some of these might need revisited just to handle modCount - see ArrayList
+    //  - not to mention 'range' variants
     // -addFirst() - List
     // -addLast() - List
     // -contains(object) - AbstractCollection
@@ -86,6 +86,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     // -remove(object) - AbstractCollection
     // -removeFirst() - List
     // -removeLast() - List
+    // -replaceAll(unaryOp) - List
     // -sort(comparator) - List
     // -toString() - AbstractCollection
     // -forEach(action) - Iterable
@@ -752,6 +753,21 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             totalNodes += counts[i] = ((Node) in[i]).children.length;
         }
         
+        // TODO: Somewhere, maybe about here, we need to transfer ownership of grandchildren (g for c : in for g : c.children)
+        //  (if they are nodes, and owned up to this point). Unfortunately this means visiting each grandchild,
+        //  rather than just array-copying pointers to them. The cache misses may be devastating.
+        //  Some options:
+        //   1. We could just not transfer ownership, but that would leave the entire list unowned, since everything after
+        //      the first parentId mismatch is unowned, and the root children would not match expected parentId.
+        //   2. We could back out of using fine-grained ids, and just use the listId (and change it upon forking).
+        //      This would mean subList forking would disown nodes even outside the subList.
+        //   3. We could move the parentIds to the parent itself, ie store in an array alongside children. This seems to
+        //      be exactly what size tables do, rather than store the size on each node. This significantly adds to the
+        //      cost of copying a ParentNode. And what about parentIds of size tables?
+        //      - Could this be a bitset instead of an array? It seems sufficient to know "do I own this child?"
+        //        - On fork(), list disowns root and tail (zeroes-out ownership bits)
+        //        - On node copy, node disowns children (zeroes-out ownership bits)
+        
         int minLength = ((totalNodes-1) / SPAN) + 1;
         int maxLength = minLength + MARGIN;
         int finalLength = in.length;
@@ -795,6 +811,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                     int remainingOldSize = oldSize - offset;
                     int remainingNewSpace = newSize - curSize;
                     
+                    // TODO: We have up to 2*SPAN children and 2*SPAN*SPAN grandchildren
+                    
                     if (remainingNewSpace >= remainingOldSize) {
                         // Empty the rest of old node into new node
                         System.arraycopy(oldNode.children, offset, newNodeChildren, curSize, remainingOldSize);
@@ -828,14 +846,14 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         Sizes sizes = node.sizes; // TODO: Owned?
         int childShift = shift - SHIFT;
         int sum = 0;
-        for (int i = 0, len = sizes.length(); i < len; i++) {
+        for (int i = 0; i < children.length; i++) {
             sizes.set(i, sum += sizeSubTree((Node) children[i], childShift));
         }
     }
     
     private static int sizeSubTree(Node node, int shift) {
         if (node instanceof SizedParentNode sn) {
-            return sn.sizes.get(sn.sizes.length()-1);
+            return sn.sizes.get(node.children.length-1);
         }
         int size = 0;
         for (; shift > 0; shift -= SHIFT) {
@@ -1048,7 +1066,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             this.parentId = parentId;
         }
         
-        abstract int length();
         abstract int get(int i);
         abstract void set(int i, int size);
         abstract Sizes ensureEditable(Id expectedParentId);
@@ -1092,7 +1109,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 super(parentId);
                 this.sizes = sizes;
             }
-            int length() { return sizes.length; }
             int get(int i) { return Byte.toUnsignedInt(sizes[i])+1; }
             void set(int i, int size) { sizes[i] = (byte) (size-1); }
             
@@ -1119,7 +1135,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 super(parentId);
                 this.sizes = sizes;
             }
-            int length() { return sizes.length; }
             int get(int i) { return sizes[i]+1; }
             void set(int i, int size) { sizes[i] = (char) (size-1); }
             
@@ -1146,7 +1161,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 super(parentId);
                 this.sizes = sizes;
             }
-            int length() { return sizes.length; }
             int get(int i) { return sizes[i]+1; }
             void set(int i, int size) { sizes[i] = size-1; }
             
@@ -1171,73 +1185,80 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     
     // children-elements:
     //  - for SPAN=16: 16(byte=1) OR 32(short=2) OR 64(int=4)
+    //  - for SPAN=32: 32(byte=1) OR 64(short=2) OR 128(int=4)
+    //  - for SPAN=64: 64(byte=1) OR 128(short=2) OR 256(int=4)
+    // below, assume SPAN=16
+    //
     // Node sizes:
-    //  - total/each = 52 + children-elements
-    //  - sharing cost = 16
-    //    - cost for 1@byte = 68
+    //  - total/each = 64 + children-elements
+    //  - sharing cost = 4
+    //    - cost for 1@byte = 80
     //    - cost for 2@byte = 84
-    //    - cost for 3@byte = 100 -- best
-    //    - cost for 1@short = 84
-    //    - cost for 2@short = 100 -- best
-    //    - cost for 3@short = 116 -- best
-    //    - cost for 1@int = 116
-    //    - cost for 2@int = 132 -- best(tie)
-    //    - cost for 3@int = 148 -- best
-    //  - 16-byte pointer-to-Node
-    //    - 16-byte parentId
-    //    - 16-byte pointer-to-children
-    //      - 4-byte children-length
+    //    - cost for 3@byte = 88
+    //    - cost for 1@short = 96
+    //    - cost for 2@short = 100
+    //    - cost for 3@short = 104
+    //    - cost for 1@int = 128
+    //    - cost for 2@int = 132
+    //    - cost for 3@int = 136
+    //  - 4-byte pointer-to-Node
+    //    - 16-byte Node-header
+    //    - 4-byte pointer-to-parentId
+    //      - 16-byte Object-header
+    //    - 4-byte pointer-to-children
+    //      - 16-byte array-header
+    //      - 4-byte length
     //      - children-elements
     // flat sizes with parentId:
-    //  - total/each = 36 + children-elements
-    //  - sharing cost = 32
-    //    - cost for 1@byte = 52
-    //    - cost for 2@byte = 84
-    //    - cost for 3@byte = 116
-    //    - cost for 1@short = 68
-    //    - cost for 2@short = 104
-    //    - cost for 3@short = 140
-    //    - cost for 1@int = 100
-    //    - cost for 2@int = 132 -- best(tie)
-    //    - cost for 3@int = 164
-    //  - 16-byte parentId
-    //  - 16-byte pointer-to-children
-    //    - 4-byte children-length
+    //  - total/each = 44 + children-elements
+    //  - sharing cost = 8
+    //    - cost for 1@byte = 60
+    //    - cost for 2@byte = 68 -- best
+    //    - cost for 3@byte = 76 -- best
+    //    - cost for 1@short = 76
+    //    - cost for 2@short = 84 -- best
+    //    - cost for 3@short = 92 -- best
+    //    - cost for 1@int = 108
+    //    - cost for 2@int = 116 -- best
+    //    - cost for 3@int = 124 -- best
+    //  - 4-byte pointer-to-parentId
+    //    - 16-byte Object-header
+    //  - 4-byte pointer-to-children
+    //    - 16-byte array-header
+    //    - 4-byte length
     //    - children-elements
-    //  - extra 16 bytes on each Node, compared to alternatives
     // flat sizes without parentId:
-    //  - total/each = 20 + children-elements
+    //  - total/each = 24 + children-elements
     //  - no sharing
-    //    - cost for 1@byte = 36 -- best
-    //    - cost for 2@byte = 72 -- best
-    //    - cost for 3@byte = 108
-    //    - cost for 1@short = 52 -- best
-    //    - cost for 2@short = 104
-    //    - cost for 3@short = 156
-    //    - cost for 1@int = 84 -- best
-    //    - cost for 2@int = 148
-    //    - cost for 3@int = 212
-    //  - 16-byte pointer-to-children
-    //    - 4-byte children-length
+    //    - cost for 1@byte = 40 -- best
+    //    - cost for 2@byte = 80
+    //    - cost for 3@byte = 120
+    //    - cost for 1@short = 56 -- best
+    //    - cost for 2@short = 112
+    //    - cost for 3@short = 168
+    //    - cost for 1@int = 88 -- best
+    //    - cost for 2@int = 176
+    //    - cost for 3@int = 264
+    //  - 4-byte pointer-to-children
+    //    - 16-byte array-header
+    //    - 4-byte length
     //    - children-elements
     //
     // Sharing only saves when children are updated (added/removed mutates sizes, so cannot share)
     
-    // Plain array memory:
-    //  + 4-byte length
-    //  + elements
-    // Practical least memory:
-    //  + 16-byte parentId per node
-    //  + 4-byte length per node
-    //  + size table per sized parent node (16-64 bytes)
-    //  + elements
-    // Actual additional memory:
-    //  + 16-byte pointer-to-children per node
-    //  + 16-byte id per parent node
-    //  + 16-byte pointer-to-size-table per sized parent node
-    //  + 16-byte pointer-to-size-table-children per sized parent node
-    //  + 16-byte size table parentId per sized parent node
-    //  + 4-byte size table length per sized parent node
+    // current structure:
+    //  - 16-byte Node header
+    //  - 4-byte children pointer
+    //    - 16-byte array header
+    //    - 4-byte length
+    //    - (4-256)-byte children pointers (1-64 4-byte pointers)
+    //  - (2-8)-byte children ownership bitset (supports 16-64 children)
+    //  - (circumstantial) 4-byte size table pointer
+    //    - 16-byte array header
+    //    - 4-byte length
+    //    - (1-256)-byte sizes (1-64 (1-4)-byte sizes)
+    //  - (maybe) (2-8)-byte children size tables ownership bitset (supports 16-64 children)
+    //    - can't know whether children even have size tables to own
     
     // If I have to copy a node, that means I didn't own it, which means I didn't own its children either
     // If I own a node, but replace it, I might be able to transfer ownership of its children, either by
