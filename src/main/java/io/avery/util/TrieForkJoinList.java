@@ -416,6 +416,9 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     
     // May update root, rootShift
     private void pushDownTail() {
+        // NOTE: During join(), tailSize may be < SPAN, in which case all ancestors should become SizedNodes.
+        // However, join() will do the fixup itself, so we don't handle it here.
+        
         Node oldRoot = root;
         if (oldRoot == null) {
             root = new Node(tail);
@@ -445,7 +448,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         
         // Second pass
         if (deepestNonFullAncestorShift > oldRootShift) {
-            // No non-full ancestors - need to make a new root above old root
+            // No existing non-full ancestors - need to make a new root above old root
             if (oldRoot instanceof SizedNode) {
                 Sizes sizes = Sizes.of(deepestNonFullAncestorShift, 2);
                 sizes.set(0, size - tailSize);
@@ -548,7 +551,10 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     //      - Can still detect this - root will not match the first node in iterator stack
     //        - (Which implies iterator can prevent gc... probably ok)
     //        - In that case, traverse the stack and ensureEditable for each node
-    //      - I think this can only happen due to a co-mod anyway
+    //      - This can only happen due to a co-mod anyway
+    //  - IDEA: Use a separate checksum to tell iterators to re-sync their stack on checksum mismatch
+    //    - Only need to increment checksum if we changed some ownership during set() (unowned -> owned)
+    //      or fork() (owned -> unowned, maybe only subList.fork() since list.fork() is a faster root-sync)
     
     // if other is a known implementation: fork() it to ensure no unsafe sharing or mutation
     //  - this also protects the list when joining itself, or a sublist
@@ -568,347 +574,489 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     
     // TODO: Nodes with free space?
     
-    // /rrb_concat
-    // /concat_sub_tree
-    // /rebalance
-    // -create_concat_plan
-    // /execute_concat_plan
-    
     @Override
     public boolean join(Collection<? extends E> other) {
-        return false;
+        // TODO: Update if we add ForkJoinCollection superinterface
+        if (!(other instanceof ForkJoinList<? extends E> fjl)) {
+            return addAll(other);
+        }
+        if (!((other = fjl.fork()) instanceof TrieForkJoinList<? extends E> right)) {
+            return addAll(other); // TODO: Skip copying
+        }
+        if (right.isEmpty()) {
+            return false;
+        }
+        if (isEmpty()) {
+            size = right.size;
+            tailSize = right.tailSize;
+            rootShift = right.rootShift;
+            root = right.root;
+            tail = right.tail;
+            owns = 0;
+            return true;
+        }
+
+        if (right.root == null) {
+            int leftTailSize = tailSize, rightTailSize = right.tailSize;
+            Object[] rightTail = right.tail;
+
+            if (leftTailSize == SPAN) {
+                // Push down tail and adopt right tail
+                pushDownTail();
+                tail = rightTail;
+                tailSize = rightTailSize;
+                size += right.size;
+                return true;
+            }
+
+            int newTailSize = leftTailSize + rightTailSize;
+            Object[] leftTail = getEditableTail();
+
+            if (newTailSize <= SPAN) {
+                // Merge tails
+                System.arraycopy(rightTail, 0, leftTail, leftTailSize, rightTailSize);
+                tailSize = newTailSize;
+                size += right.size;
+                return true;
+            }
+
+            // Fill left tail from right tail; Push down; Adopt remaining right tail
+            pushDownTail();
+            claimTail();
+            // TODO? Makes a new array - assumes right tail would need copied anyway
+            Object[] newTail = tail = new Object[SPAN];
+            int suffixSize = SPAN - leftTailSize;
+            System.arraycopy(rightTail,  0, leftTail, leftTailSize, suffixSize);
+            System.arraycopy(rightTail, suffixSize, newTail, 0, tailSize = rightTailSize - suffixSize);
+            size += right.size;
+            return true;
+        }
+
+        // TODO: Since right is forked, all attempts to transfer ownership of nodes under it will fail
+        //  Calls to ensureEditable() on right nodes should always copy
+        //   - This assumes that the _new_ parent is passed as expected, not the old parent
+        //   - child = child.ensureEditable(parent); parent = child; child = child[idx];
+        //   - node.tryTransferOwnership(from, to) should be called after node.ensureEditable(from);
+        //     - ie: only try if we know we own it
+        //   - DO NOT tryTransferOwnership(from, to) unless we own the whole chain of parents leading to from,
+        //     else we may modify shared nodes!!!
+        //  It is unclear if there will be cases where right is not forked (insert?)
+
+        // To reduce wasted space, trim tail to size before push-down
+        if (tail.length != tailSize) {
+            claimTail();
+            tail = Arrays.copyOf(tail, tailSize);
+        }
+        pushDownTail();
+//        root = concatSubTree(this, listId, root, rootShift, right, right.listId, right.root, right.rootShift, true, true);
+        tail = right.tail;
+        tailSize = right.tailSize;
+        claimOrDisownTail(right.ownsTail());
+        size += right.size;
+        return true;
+    }
+    
+    // TODO: merge create+execute concat plan
+    // TODO: skip more work if no redistribution needed
+    // TODO: avoid creating size tables / sized nodes if not needed
+    //  - NOTE: unless isTop, the (direct) Node returned from concatSubTree()/rebalance() is just going to be
+    //    destructured anyway, so no point making a SizedNode
+    //  - When would concatSubTree not need size tables?
+    //    - At level 0, never need size tables
+    //    - At level N, no need if wide-node is full (contains exactly M or 2M full children), OR wide-node is leftwise full with no right sibling
+    //      - "full children" => all size M (works for all levels), or no sized nodes (works for level != 0)
+    //      - "no right sibling" => keep track of this as we go down the tree initially
+
+    private Node concatSubTree(Object leftParent, Id leftParentId, Node leftNode, int leftShift,
+                               Object rightParent, Id rightParentId, Node rightNode, int rightShift,
+                               boolean isTop, boolean isRightMost) {
+        // TODO: Pipe parents down to ensureEditable; transfer ownership to new parents where applicable
+        // TODO: Can we reuse existing nodes instead of returning new ones here?
+        if (leftShift > rightShift) {
+            Id newLeftParentId = leftParentId != null ? leftNode.id() : null;
+            Node centerNode = concatSubTree(leftNode, newLeftParentId, (Node) leftNode.children[leftNode.children.length-1], leftShift - SHIFT, rightParent, rightParentId, rightNode, rightShift, false, isRightMost);
+            return rebalance(leftNode, centerNode, null, leftShift, isTop, isRightMost);
+        }
+        if (leftShift < rightShift) {
+            Id newRightParentId = rightParentId != null ? rightNode.id() : null;
+            Node centerNode = concatSubTree(leftParent, leftParentId, leftNode, leftShift, rightNode, newRightParentId, (Node) rightNode.children[0], rightShift - SHIFT, false, isRightMost && rightNode.children.length == 1);
+            return rebalance(null, centerNode, rightNode, rightShift, isTop, isRightMost);
+        }
+        if (leftShift > 0) {
+            Id newLeftParentId = leftParentId != null ? leftNode.id() : null;
+            Id newRightParentId = rightParentId != null ? rightNode.id() : null;
+            Node centerNode = concatSubTree(leftNode, newLeftParentId, (Node) leftNode.children[leftNode.children.length-1], leftShift - SHIFT, rightNode, newRightParentId, (Node) rightNode.children[0], rightShift - SHIFT, false, isRightMost && rightNode.children.length == 1);
+            return rebalance(leftNode, centerNode, rightNode, leftShift, isTop, isRightMost);
+        }
+        Node node;
+        if (isTop) {
+            int leftSize = leftNode.children.length, rightSize = rightNode.children.length, mergedSize = leftSize + rightSize;
+            if (mergedSize == SPAN + SPAN) {
+                Id newId = new Id();
+                node = new ParentNode(newId, leftParentId, new Object[]{ leftNode, rightNode });
+                leftNode.tryTransferOwnership(leftParentId, newId);
+                rightNode.tryTransferOwnership(rightParentId, newId);
+                return node;
+            }
+            SizedParentNode sn;
+            if (mergedSize <= SPAN) {
+                // TODO: How would this case happen in practice?
+                //  We know that !this.isEmpty(), so this.tailSize >= 1
+                //  We know that this.rootShift == 0, so root = tail (we already pushed down tail), so leftSize = this.tailSize.
+                //  We know that right.rootShift == 0 and right.root != null, so rightSize >= SPAN
+                //  So mergedSize = leftSize + rightSize >= 1 + SPAN > SPAN ??
+                //  Literature implied that slicing might mess things up ??
+                leftNode = leftNode.ensureEditableWithLen(leftParentId, mergedSize);
+                System.arraycopy(rightNode.children, 0, leftNode.children, leftSize, rightSize);
+                if (mergedSize == SPAN) {
+                    return leftNode;
+                }
+                // Need another level with a size table just to indicate that the tree is not leftwise dense.
+                Id newId = new Id();
+                Sizes sizes = Sizes.of(leftParentId, SHIFT, 1);
+                sn = new SizedParentNode(newId, leftParentId, new Object[]{ leftNode }, sizes);
+                leftNode.tryTransferOwnership(leftParentId, newId);
+            }
+            else {
+                Id newId = new Id();
+                Sizes sizes = Sizes.of(leftParentId, SHIFT, 2);
+                sn = new SizedParentNode(newId, leftParentId, new Object[]{ leftNode, rightNode }, sizes);
+                leftNode.tryTransferOwnership(leftParentId, newId);
+                rightNode.tryTransferOwnership(rightParentId, newId);
+            }
+            setSizes(sn, rootShift = SHIFT);
+            return sn;
+        }
+        return new Node(null, new Object[]{ leftNode, rightNode }); // TODO: set children parents -- this Node will be unwrapped
     }
 
-//    @Override
-//    public boolean join(Collection<? extends E> other) {
-//        // TODO: Update if we add ForkJoinCollection superinterface
-//        if (!(other instanceof ForkJoinList<? extends E> fjl)) {
-//            return addAll(other);
-//        }
-//        if (!((other = fjl.fork()) instanceof TrieForkJoinList<? extends E> right)) {
-//            return addAll(other); // TODO: Skip copying
-//        }
-//        if (right.isEmpty()) {
-//            return false;
-//        }
-//        if (isEmpty()) {
-//            size = right.size;
-//            tailSize = right.tailSize;
-//            rootShift = right.rootShift;
-//            root = right.root;
-//            tail = right.tail;
-//            return true;
-//        }
-//
-//        if (right.root == null) {
-//            int leftTailSize = tailSize, rightTailSize = right.tailSize;
-//            Node rightTail = right.tail;
-//
-//            if (leftTailSize == SPAN) {
-//                // Push down tail and adopt right tail
-//                pushDownTail();
-//                tail = rightTail;
-//                tailSize = rightTailSize;
-//                size += right.size;
-//                return true;
-//            }
-//
-//            int newTailSize = leftTailSize + rightTailSize;
-//            Node leftTail = tail = tail.ensureEditableWithLen(listId, SPAN);
-//
-//            if (newTailSize <= SPAN) {
-//                // Merge tails
-//                System.arraycopy(rightTail.children, 0, leftTail.children, leftTailSize, rightTailSize);
-//                tailSize = newTailSize;
-//                size += right.size;
-//                return true;
-//            }
-//
-//            // Fill left tail from right tail; Push down; Adopt remaining right tail
-//            pushDownTail();
-//            // TODO? Makes a new node - assumes right tail would need copied anyway
-//            Node newTail = tail = new Node(listId, new Object[SPAN]);
-//            int suffixSize = SPAN - leftTailSize;
-//            System.arraycopy(rightTail.children,  0, leftTail.children, leftTailSize, suffixSize);
-//            System.arraycopy(rightTail.children, suffixSize, newTail.children, 0, tailSize = rightTailSize - suffixSize);
-//            size += right.size;
-//            return true;
-//        }
-//
-//        // TODO: Since right is forked, all attempts to transfer ownership of nodes under it will fail
-//        //  Calls to ensureEditable() on right nodes should always copy
-//        //   - This assumes that the _new_ parent is passed as expected, not the old parent
-//        //   - child = child.ensureEditable(parent); parent = child; child = child[idx];
-//        //   - node.tryTransferOwnership(from, to) should be called after node.ensureEditable(from);
-//        //     - ie: only try if we know we own it
-//        //   - DO NOT tryTransferOwnership(from, to) unless we own the whole chain of parents leading to from,
-//        //     else we may modify shared nodes!!!
-//        //  It is unclear if there will be cases where right is not forked (insert?)
-//
-//        // To reduce wasted space, trim tail to size before push-down
-//        if (tail.children.length != tailSize) {
-//            tail = tail.ensureEditableWithLen(listId, tailSize);
-//        }
-//        pushDownTail();
-//        root = concatSubTree(this, listId, root, rootShift, right, right.listId, right.root, right.rootShift, true, true);
-//        tail = right.tail;
-//        tailSize = right.tailSize;
-//        size += right.size;
-//        return true;
-//    }
-//
-//    // TODO: merge create+execute concat plan
-//    // TODO: skip more work if no redistribution needed
-//    // TODO: avoid creating size tables / sized nodes if not needed
-//    //  - NOTE: unless isTop, the (direct) Node returned from concatSubTree()/rebalance() is just going to be
-//    //    destructured anyway, so no point making a SizedNode
-//    //  - When would concatSubTree not need size tables?
-//    //    - At level 0, never need size tables
-//    //    - At level N, no need if wide-node is full (contains exactly M or 2M full children), OR wide-node is leftwise full with no right sibling
-//    //      - "full children" => all size M (works for all levels), or no sized nodes (works for level != 0)
-//    //      - "no right sibling" => keep track of this as we go down the tree initially
-//
-//    private Node concatSubTree(Object leftParent, Id leftParentId, Node leftNode, int leftShift,
-//                               Object rightParent, Id rightParentId, Node rightNode, int rightShift,
-//                               boolean isTop, boolean isRightMost) {
-//        // TODO: Pipe parents down to ensureEditable; transfer ownership to new parents where applicable
-//        // TODO: Can we reuse existing nodes instead of returning new ones here?
-//        if (leftShift > rightShift) {
-//            Id newLeftParentId = leftParentId != null ? leftNode.id() : null;
-//            Node centerNode = concatSubTree(leftNode, newLeftParentId, (Node) leftNode.children[leftNode.children.length-1], leftShift - SHIFT, rightParent, rightParentId, rightNode, rightShift, false, isRightMost);
-//            return rebalance(leftNode, centerNode, null, leftShift, isTop, isRightMost);
-//        }
-//        if (leftShift < rightShift) {
-//            Id newRightParentId = rightParentId != null ? rightNode.id() : null;
-//            Node centerNode = concatSubTree(leftParent, leftParentId, leftNode, leftShift, rightNode, newRightParentId, (Node) rightNode.children[0], rightShift - SHIFT, false, isRightMost && rightNode.children.length == 1);
-//            return rebalance(null, centerNode, rightNode, rightShift, isTop, isRightMost);
-//        }
-//        if (leftShift > 0) {
-//            Id newLeftParentId = leftParentId != null ? leftNode.id() : null;
-//            Id newRightParentId = rightParentId != null ? rightNode.id() : null;
-//            Node centerNode = concatSubTree(leftNode, newLeftParentId, (Node) leftNode.children[leftNode.children.length-1], leftShift - SHIFT, rightNode, newRightParentId, (Node) rightNode.children[0], rightShift - SHIFT, false, isRightMost && rightNode.children.length == 1);
-//            return rebalance(leftNode, centerNode, rightNode, leftShift, isTop, isRightMost);
-//        }
-//        Node node;
-//        if (isTop) {
-//            int leftSize = leftNode.children.length, rightSize = rightNode.children.length, mergedSize = leftSize + rightSize;
-//            if (mergedSize == SPAN + SPAN) {
-//                Id newId = new Id();
-//                node = new ParentNode(newId, leftParentId, new Object[]{ leftNode, rightNode });
-//                leftNode.tryTransferOwnership(leftParentId, newId);
-//                rightNode.tryTransferOwnership(rightParentId, newId);
-//                return node;
-//            }
-//            SizedParentNode sn;
-//            if (mergedSize <= SPAN) {
-//                // TODO: How would this case happen in practice?
-//                //  We know that !this.isEmpty(), so this.tailSize >= 1
-//                //  We know that this.rootShift == 0, so root = tail (we already pushed down tail), so leftSize = this.tailSize.
-//                //  We know that right.rootShift == 0 and right.root != null, so rightSize >= SPAN
-//                //  So mergedSize = leftSize + rightSize >= 1 + SPAN > SPAN ??
-//                //  Literature implied that slicing might mess things up ??
-//                leftNode = leftNode.ensureEditableWithLen(leftParentId, mergedSize);
-//                System.arraycopy(rightNode.children, 0, leftNode.children, leftSize, rightSize);
-//                if (mergedSize == SPAN) {
-//                    return leftNode;
-//                }
-//                // Need another level with a size table just to indicate that the tree is not leftwise dense.
-//                Id newId = new Id();
-//                Sizes sizes = Sizes.of(leftParentId, SHIFT, 1);
-//                sn = new SizedParentNode(newId, leftParentId, new Object[]{ leftNode }, sizes);
-//                leftNode.tryTransferOwnership(leftParentId, newId);
-//            }
-//            else {
-//                Id newId = new Id();
-//                Sizes sizes = Sizes.of(leftParentId, SHIFT, 2);
-//                sn = new SizedParentNode(newId, leftParentId, new Object[]{ leftNode, rightNode }, sizes);
-//                leftNode.tryTransferOwnership(leftParentId, newId);
-//                rightNode.tryTransferOwnership(rightParentId, newId);
-//            }
-//            setSizes(sn, rootShift = SHIFT);
-//            return sn;
-//        }
-//        return new Node(null, new Object[]{ leftNode, rightNode }); // TODO: set children parents -- this Node will be unwrapped
-//    }
-//
-//    private static class RebalanceState {
-//        Object[] in;
-//        Object[] out;
-//
-//        RebalanceState(Node left, Node center, Node right) {
-//            int leftLen = left != null ? left.children.length : 0;
-//            int rightLen = right != null ? right.children.length : 0;
-//            int centerLen = center.children.length;
-//            in = new Node[leftLen + centerLen + rightLen];
-//            if (left != null) {
-//                System.arraycopy(left.children, 0, in, 0, leftLen);
-//            }
-//            System.arraycopy(center.children, 0, in, leftLen, centerLen);
-//            if (right != null) {
-//                System.arraycopy(right.children, 0, in, leftLen + centerLen, rightLen);
-//            }
-//        }
-//    }
-//
-//    private Node rebalance(Node leftNode, Node centerNode, Node rightNode, int shift, boolean isTop, boolean isRightMost) {
-//        RebalanceState state = new RebalanceState(leftNode, centerNode, rightNode);
-//        int[] counts = createConcatPlan(state);
-//        executeConcatPlan(state, counts, shift);
-//        Object[] out = state.out;
-//        if (out.length <= SPAN) {
-//            // TODO: avoid creating size tables / sized nodes if not needed
-//            Sizes sizes = Sizes.of(null, shift, out.length);
-//            SizedParentNode sn = new SizedParentNode(new WeakReference<>(null), out, sizes); // TODO: set children parent
-//            setSizes(sn, shift);
-//            if (isTop) {
-//                sn.tryTransferOwnership(null, this); // TODO: update
-//                rootShift = shift;
-//                return sn;
-//            }
-//            return new Node(new WeakReference<>(null), new Object[]{ sn }); // TODO: set child parent
-//        }
-//        int leftLen = SPAN;
-//        int rightLen = out.length - SPAN;
-//        Object[] left = new Object[leftLen];
-//        Object[] right = new Object[rightLen];
-//        System.arraycopy(out, 0, left, 0, leftLen);
-//        System.arraycopy(out, leftLen, right, 0, rightLen);
-//        // TODO: avoid creating size tables / sized nodes if not needed
-//        Sizes leftSizes = Sizes.of(null, shift, leftLen); // TODO: parent
-//        Sizes rightSizes = Sizes.of(null, shift, rightLen); // TODO: parent
-//        SizedParentNode leftSn = new SizedParentNode(null, left, leftSizes); // TODO: parent
-//        SizedParentNode rightSn = new SizedParentNode(null, right, rightSizes); // TODO: parent
-//        setSizes(leftSn, shift);
-//        setSizes(rightSn, shift);
-//        if (isTop) {
-//            rootShift = shift += SHIFT;
-//            Sizes sizes = Sizes.of(this, shift, 2);
-//            SizedParentNode sn = new SizedParentNode(this, new Object[]{ leftSn, rightSn }, sizes);
-//            setSizes(sn, shift);
-//            return sn;
-//        }
-//        return new Node(new WeakReference<>(null), new Object[]{ leftSn, rightSn }); // TODO: [X] parent
-//    }
-//
-//    private int[] createConcatPlan(RebalanceState state) {
-//        Object[] in = state.in;
-//        int[] counts = new int[in.length];
-//        int totalNodes = 0;
-//
-//        for (int i = 0; i < in.length; i++) {
-//            totalNodes += counts[i] = ((Node) in[i]).children.length;
-//        }
-//
-//        // TODO: Somewhere, maybe about here, we need to transfer ownership of grandchildren (g for c : in for g : c.children)
-//        //  (if they are nodes, and owned up to this point). Unfortunately this means visiting each grandchild,
-//        //  rather than just array-copying pointers to them. The cache misses may be devastating.
-//        //  Some options:
-//        //   1. We could just not transfer ownership, but that would leave the entire list unowned, since everything after
-//        //      the first parentId mismatch is unowned, and the root children would not match expected parentId.
-//        //   2. We could back out of using fine-grained ids, and just use the listId (and change it upon forking).
-//        //      This would mean subList forking would disown nodes even outside the subList.
-//        //   3. We could move the parentIds to the parent itself, ie store in an array alongside children. This seems to
-//        //      be exactly what size tables do, rather than store the size on each node. This significantly adds to the
-//        //      cost of copying a ParentNode. And what about parentIds of size tables?
-//        //      - Could this be a bitset instead of an array? It seems sufficient to know "do I own this child?"
-//        //        - On fork(), list disowns root and tail (zeroes-out ownership bits)
-//        //        - On node copy, node disowns children (zeroes-out ownership bits)
-//
-//        int minLength = ((totalNodes-1) / SPAN) + 1;
-//        int maxLength = minLength + MARGIN;
-//        int finalLength = in.length;
-//        for (int i = 0; finalLength > maxLength; ) {
-//            while (counts[i] >= DO_NOT_REDISTRIBUTE) {
-//                i++;
-//            }
-//            int toRedistribute = counts[i];
-//            do {
-//                // Move children to the next node, up to SPAN
-//                int oldNext = counts[i+1];
-//                int newNext = counts[i] = Math.min(oldNext + toRedistribute, SPAN);
-//                toRedistribute -= newNext - oldNext;
-//                i++;
-//            } while (toRedistribute > 0);
-//            System.arraycopy(counts, i+1, counts, i, --finalLength + --i);
-//        }
-//
-//        state.out = new Node[finalLength];
-//        return counts;
-//    }
-//
-//    private void executeConcatPlan(RebalanceState state, int[] counts, int shift) {
-//        Object[] in = state.in;
-//        Object[] out = state.out;
-//        int j = 0, offset = 0;
-//
-//        for (int i = 0; i < out.length; i++) {
-//            Node oldNode = (Node) in[j];
-//            int newSize = counts[i];
-//            int oldSize = oldNode.children.length;
-//
-//            if (offset == 0 && newSize == oldSize) {
-//                j++;
-//                out[i] = oldNode;
-//            }
-//            else {
-//                Object[] newNodeChildren = new Object[newSize];
-//                for (int curSize = 0; curSize < newSize; ) {
-//                    oldNode = (Node) in[j];
-//                    int remainingOldSize = oldSize - offset;
-//                    int remainingNewSpace = newSize - curSize;
-//
-//                    // TODO: We have up to 2*SPAN children and 2*SPAN*SPAN grandchildren
-//
-//                    if (remainingNewSpace >= remainingOldSize) {
-//                        // Empty the rest of old node into new node
-//                        System.arraycopy(oldNode.children, offset, newNodeChildren, curSize, remainingOldSize);
-//                        curSize += remainingOldSize;
-//                        offset = 0;
-//                        j++;
-//                    }
-//                    else {
-//                        // Fill the rest of new node with old node
-//                        System.arraycopy(oldNode.children, offset, newNodeChildren, curSize, remainingNewSpace);
-//                        offset += remainingNewSpace;
-//                        break;
-//                    }
-//                }
-//                if (shift > 0) {
-//                    // TODO: avoid creating size tables / sized nodes if not needed
-//                    Sizes sizes = Sizes.of(null, shift, newSize); // TODO: parent
-//                    SizedParentNode sn = new SizedParentNode(null, newNodeChildren, sizes); // TODO: parent
-//                    setSizes(sn, shift - SHIFT);
-//                    out[i] = sn;
-//                }
-//                else {
-//                    out[i] = new Node(new WeakReference<>(null), newNodeChildren); // TODO: parent
-//                }
-//            }
-//        }
-//    }
-//
-//    private static void setSizes(SizedParentNode node, int shift) {
-//        Object[] children = node.children;
-//        Sizes sizes = node.sizes; // TODO: Owned?
-//        int childShift = shift - SHIFT;
-//        int sum = 0;
-//        for (int i = 0; i < children.length; i++) {
-//            sizes.set(i, sum += sizeSubTree((Node) children[i], childShift));
-//        }
-//    }
-//
-//    private static int sizeSubTree(Node node, int shift) {
-//        if (node instanceof SizedParentNode sn) {
-//            return sn.sizes.get(node.children.length-1);
-//        }
-//        int size = 0;
-//        for (; shift > 0; shift -= SHIFT) {
-//            int last = node.children.length-1;
-//            size += (last << shift);
-//            node = (Node) node.children[last];
-//        }
-//        return size + node.children.length;
-//    }
+    private static class RebalanceState {
+        Object[] in;
+        Object[] out;
+
+        RebalanceState(Node left, Node center, Node right) {
+            int leftLen = left != null ? left.children.length : 0;
+            int rightLen = right != null ? right.children.length : 0;
+            int centerLen = center.children.length;
+            in = new Node[leftLen + centerLen + rightLen];
+            if (left != null) {
+                System.arraycopy(left.children, 0, in, 0, leftLen);
+            }
+            System.arraycopy(center.children, 0, in, leftLen, centerLen);
+            if (right != null) {
+                System.arraycopy(right.children, 0, in, leftLen + centerLen, rightLen);
+            }
+        }
+    }
+    
+    private Node rebalance(Node leftNode, Node centerNode, Node rightNode, int shift, boolean isTop, boolean isRightMost) {
+        RebalanceState state = new RebalanceState(leftNode, centerNode, rightNode);
+        int[] counts = createConcatPlan(state);
+        executeConcatPlan(state, counts, shift);
+        Object[] out = state.out;
+        if (out.length <= SPAN) {
+            // TODO: avoid creating size tables / sized nodes if not needed
+            Sizes sizes = Sizes.of(null, shift, out.length);
+            SizedParentNode sn = new SizedParentNode(new WeakReference<>(null), out, sizes); // TODO: set children parent
+            setSizes(sn, shift);
+            if (isTop) {
+                sn.tryTransferOwnership(null, this); // TODO: update
+                rootShift = shift;
+                return sn;
+            }
+            return new Node(new WeakReference<>(null), new Object[]{ sn }); // TODO: set child parent
+        }
+        int leftLen = SPAN;
+        int rightLen = out.length - SPAN;
+        Object[] left = new Object[leftLen];
+        Object[] right = new Object[rightLen];
+        System.arraycopy(out, 0, left, 0, leftLen);
+        System.arraycopy(out, leftLen, right, 0, rightLen);
+        // TODO: avoid creating size tables / sized nodes if not needed
+        Sizes leftSizes = Sizes.of(null, shift, leftLen); // TODO: parent
+        Sizes rightSizes = Sizes.of(null, shift, rightLen); // TODO: parent
+        SizedParentNode leftSn = new SizedParentNode(null, left, leftSizes); // TODO: parent
+        SizedParentNode rightSn = new SizedParentNode(null, right, rightSizes); // TODO: parent
+        setSizes(leftSn, shift);
+        setSizes(rightSn, shift);
+        if (isTop) {
+            rootShift = shift += SHIFT;
+            Sizes sizes = Sizes.of(this, shift, 2);
+            SizedParentNode sn = new SizedParentNode(this, new Object[]{ leftSn, rightSn }, sizes);
+            setSizes(sn, shift);
+            return sn;
+        }
+        return new Node(new WeakReference<>(null), new Object[]{ leftSn, rightSn }); // TODO: [X] parent
+    }
+    
+    // Merge create+execute concat plan
+    // Ultimately all we are doing is shifting grandchild-slots left to reduce child-slots.
+    // The main trick is we're doing it across two parents, so we need to keep track of where one ends and the other begins.
+    // We should be able to reuse existing nodes throughout the concat (or at least their data - we may need to replace with SizedNodes)
+    // Need parent-of-left and parent-of-right to getEditableChild if rebalancing is needed
+    //  - If we discover rebalancing is needed at the bottom, all ancestors must be editable first...
+    
+    void rebalance(Node left, Node right, int shift, boolean isRightMost) {
+        // Assume left and right are editable
+        // Assume that right's first child has already been removed if lower level rebalancing required it
+        //  - This might even mean that right is empty...
+        // TODO: Assume shift > SHIFT beyond this point, ie we can cast children[i] to Node
+        
+        Object[] leftChildren = left.children;
+        Object[] rightChildren = right.children;
+        int totalNodes = 0;
+        for (Object child : leftChildren) {
+            totalNodes += ((Node) child).children.length;
+        }
+        for (Object child : rightChildren) {
+            totalNodes += ((Node) child).children.length;
+        }
+        
+        int minLength = ((totalNodes-1) / SPAN) + 1;
+        int maxLength = minLength + MARGIN;
+        int curLength = leftChildren.length + rightChildren.length;
+        if (curLength <= maxLength) {
+            return; // Yay, no rebalancing needed
+        }
+        
+        int childShift = shift - SHIFT;
+        int i = 0;
+        int llen = leftChildren.length, rlen = leftChildren.length;
+        Node lNode = left, rNode = left;
+        Node lastNode = !isRightMost ? null : (Node) (rightChildren.length > 0 ? rightChildren[rightChildren.length-1] : leftChildren[leftChildren.length-1]);
+        Object[] lchildren = leftChildren, rchildren = leftChildren;
+        
+        do {
+            int ilen;
+            while ((ilen = ((Node) lchildren[i]).children.length) >= DO_NOT_REDISTRIBUTE) {
+                if (++i == llen) {
+                    // We will hit this case at most once
+                    i = 0;
+                    llen = rightChildren.length;
+                    lNode = right;
+                    lchildren = rightChildren;
+                }
+            }
+            int skip = 0;
+            for (;;) {
+                int j = i+1;
+                if (j == llen) {
+                    // We may be here again after emptying j=0 if i is still under threshold.
+                    // In that case, we don't want to lose the --rlen we did.
+                    j = 0;
+                    if (rNode == left) {
+                        lNode.copy(true, rlen);
+                        rlen = rightChildren.length;
+                        rNode = right;
+                        rchildren = rightChildren;
+                    }
+                }
+                
+                Node rChildNode = (Node) rchildren[j];
+                int slots = SPAN - ilen;
+                int items = rChildNode.children.length;
+                
+                if (slots < items) {
+                    // Fill the rest of lChildNode with rChildNode
+                    lNode.getEditableChild(i, skip, ilen, slots, rChildNode, false, childShift);
+                    i = j;
+                    llen = rlen;
+                    lNode = rNode;
+                    lchildren = rchildren;
+                    skip = slots;
+                    ilen = items - slots;
+                }
+                else {
+                    // Empty the rest of rChildNode into lChildNode
+                    // NOTE: If the outer loop doesn't break here, we may need to resize this node again.
+                    lNode.getEditableChild(i, skip, ilen, items, rChildNode, rChildNode == lastNode, childShift);
+                    
+                    // Shift remaining children left to close the gap over the now-empty child
+                    System.arraycopy(rchildren, j+1, rchildren, j, --rlen-j);
+                    // TODO: Update rnode ownership
+                    // TODO: Update rnode sized-ness
+                    
+                    // NOTE: If we tracked length, we would decrement rnode.length here (and null-out the last position)
+                    //  As is, we must remember to truncate the left/right array(s) at the end
+                    
+                    if (rNode == left) {
+                        // The length of rNode has decreased, so we may need to make an adjustment to keep i in bounds.
+                        // If rNode == right, don't adjust, because either:
+                        //  - i is still on left side (so we shouldn't change its bound), OR
+                        //  - i is also on right side (and will never reach the bound)
+                        // If rNode == left, i is also on left side, and we just decreased its bound, so sync.
+                        llen = rlen;
+                    }
+                    break;
+                }
+            }
+        } while (--curLength >= maxLength);
+        
+        // Truncate (possibly some of) left, and (possibly all of) right
+        //   They're already owned - we can just replace the children arrays
+        //   If nodes kept a length < capacity, we could truncate by setting the length (and nulling children up to the prev length)
+        lNode.copy(true, rlen);
+        if (lNode != right) {
+            rNode.copy(true, 0);
+        }
+    }
+    
+    // Keep track of: ownership, whether children of left/right need to become SizedNodes (or can become normal Nodes)
+    
+    // Reframing:
+    // when I encounter a direct-child with < DO_NOT_REDISTRIBUTE grand-children, can I shift left grand-children from
+    // subsequent direct-children until at or exceeds threshold?
+    //  - This could decrease the length of the rightmost direct-child, which could require making it a SizedNode
+    //  - There may not be enough grand-children to the right to reach threshold (if any direct-children to the left were above threshold)
+    //    - But that's okay - pigeonhole says we will have saved enough space overall
+    //  - The main disadvantage of this approach is that we can't stop early - we visit all direct-children
+    //  - We might as well shift-to-fill the left direct-children, which will leave at most 1 partially-filled direct-child (the rightmost)
+    //    - We can augment to count when we empty a direct-child while filling another, and stop when we have emptied enough)
+    //      - Does this approach ensure that direct-children end up at least as full as before?
+    //      - Is this approach equivalent to redistributing?
+    //        - Assume we still skip nodes until we find one < DO_NOT_REDISTRIBUTE
+    
+    // Example:
+    // 15 5 14 16 3 3 6
+    // margin = 2
+    // total = 62
+    // min = ((62-1)/16)+1 = 4
+    // max = min + margin = 6
+    // cur = 7
+    
+    // redistribute_if < 14
+    // redistribute: 15 (5)0 (14+2)16           16     (3+3)6        3 6
+    // alt:          15      (5+11)16 (14-11+13)16 (16-13+3)6 (3-3)0 3 6
+    
+    // When does a direct-child end up a SizedNode?
+    //  - For all but the last child:
+    //    - It is not full after rebalancing
+    //    - It was already a SizedNode AND didn't give away its non-full children, OR
+    //    - It picked up N children from a SizedNode AND their cumulative size < expected (N << shift), OR
+    //      - (This also means a SizedNode can become a normal Node, if its non-full children are shifted off)
+    //  - For the last child:
+    //    - It was already a SizedNode (and didn't give away its non-full children), OR
+    //    - It is not the rightmost node at its level in the tree
+    
+    private int[] createConcatPlan(RebalanceState state) {
+        Object[] in = state.in;
+        int[] counts = new int[in.length];
+        int totalNodes = 0;
+
+        for (int i = 0; i < in.length; i++) {
+            totalNodes += counts[i] = ((Node) in[i]).children.length;
+        }
+
+        // TODO: Somewhere, maybe about here, we need to transfer ownership of grandchildren (g for c : in for g : c.children)
+        //  (if they are nodes, and owned up to this point). Unfortunately this means visiting each grandchild,
+        //  rather than just array-copying pointers to them. The cache misses may be devastating.
+        //  Some options:
+        //   1. We could just not transfer ownership, but that would leave the entire list unowned, since everything after
+        //      the first parentId mismatch is unowned, and the root children would not match expected parentId.
+        //   2. We could back out of using fine-grained ids, and just use the listId (and change it upon forking).
+        //      This would mean subList forking would disown nodes even outside the subList.
+        //   3. We could move the parentIds to the parent itself, ie store in an array alongside children. This seems to
+        //      be exactly what size tables do, rather than store the size on each node. This significantly adds to the
+        //      cost of copying a ParentNode. And what about parentIds of size tables?
+        //      - Could this be a bitset instead of an array? It seems sufficient to know "do I own this child?"
+        //        - On fork(), list disowns root and tail (zeroes-out ownership bits)
+        //        - On node copy, node disowns children (zeroes-out ownership bits)
+
+        int minLength = ((totalNodes-1) / SPAN) + 1;
+        int maxLength = minLength + MARGIN;
+        int finalLength = in.length;
+        for (int i = 0; finalLength > maxLength; ) {
+            while (counts[i] >= DO_NOT_REDISTRIBUTE) {
+                i++;
+            }
+            int toRedistribute = counts[i];
+            do {
+                // Move children to the next node, up to SPAN
+                int oldNext = counts[i+1];
+                int newNext = counts[i] = Math.min(oldNext + toRedistribute, SPAN);
+                toRedistribute -= newNext - oldNext;
+                i++;
+            } while (toRedistribute > 0);
+            System.arraycopy(counts, i+1, counts, i, --finalLength + --i);
+        }
+
+        state.out = new Node[finalLength];
+        return counts;
+    }
+
+    private void executeConcatPlan(RebalanceState state, int[] counts, int shift) {
+        Object[] in = state.in;
+        Object[] out = state.out;
+        int j = 0, offset = 0;
+
+        for (int i = 0; i < out.length; i++) {
+            Node oldNode = (Node) in[j];
+            int newSize = counts[i];
+            int oldSize = oldNode.children.length;
+
+            if (offset == 0 && newSize == oldSize) {
+                j++;
+                out[i] = oldNode;
+            }
+            else {
+                Object[] newNodeChildren = new Object[newSize];
+                for (int curSize = 0; curSize < newSize; ) {
+                    oldNode = (Node) in[j];
+                    int remainingOldSize = oldSize - offset;
+                    int remainingNewSpace = newSize - curSize;
+
+                    // TODO: We have up to 2*SPAN children and 2*SPAN*SPAN grandchildren
+
+                    if (remainingNewSpace >= remainingOldSize) {
+                        // Empty the rest of old node into new node
+                        System.arraycopy(oldNode.children, offset, newNodeChildren, curSize, remainingOldSize);
+                        curSize += remainingOldSize;
+                        offset = 0;
+                        j++;
+                    }
+                    else {
+                        // Fill the rest of new node with old node
+                        System.arraycopy(oldNode.children, offset, newNodeChildren, curSize, remainingNewSpace);
+                        offset += remainingNewSpace;
+                        break;
+                    }
+                }
+                if (shift > 0) {
+                    // TODO: avoid creating size tables / sized nodes if not needed
+                    Sizes sizes = Sizes.of(null, shift, newSize); // TODO: parent
+                    SizedParentNode sn = new SizedParentNode(null, newNodeChildren, sizes); // TODO: parent
+                    setSizes(sn, shift - SHIFT);
+                    out[i] = sn;
+                }
+                else {
+                    out[i] = new Node(new WeakReference<>(null), newNodeChildren); // TODO: parent
+                }
+            }
+        }
+    }
+
+    private static void setSizes(SizedNode node, int shift) {
+        Object[] children = node.children;
+        Sizes sizes = node.sizes(); // TODO: Owned?
+        int childShift = shift - SHIFT;
+        int sum = 0;
+        for (int i = 0; i < children.length; i++) {
+            sizes.set(i, sum += sizeSubTree((Node) children[i], childShift));
+        }
+    }
+
+    private static int sizeSubTree(Node node, int shift) {
+        if (node instanceof SizedNode sn) {
+            return sn.sizes().get(node.children.length-1);
+        }
+        int size = 0;
+        for (; shift > 0; shift -= SHIFT) {
+            int last = node.children.length-1;
+            size += (last << shift);
+            node = (Node) node.children[last];
+        }
+        return size + node.children.length;
+    }
     
     @Override
     public boolean join(int index, Collection<? extends E> other) {
@@ -1020,17 +1168,105 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             }
         }
         
+        void copyOwnership(short owns, Node from, int toAdopt, int len) {
+            owns = (short) (owns & mask(len) | ((from.owns & mask(toAdopt)) << len));
+        }
+        
+        static short adjustOwnership(short owns, int skip, int keep, int take, Node from) {
+            return (short) ((owns >>> skip) & mask(keep) | ((from.owns & mask(take)) << keep));
+        }
+        
+        void truncateOwnership(int toTruncate) {
+            owns >>>= toTruncate;
+        }
+        
+        static long mask(int shift) {
+            return (1L << shift) - 1;
+        }
+        
         Node copy() {
             return new Node(children.clone());
         }
         
         Node copy(boolean isOwned, int len) {
-            Object[] newChildren = Arrays.copyOf(children, len);
+            if (children.length != len) {
+                Object[] newChildren = Arrays.copyOf(children, len);
+                if (isOwned) {
+                    children = newChildren;
+                    return this;
+                }
+                return new Node(owns, newChildren);
+            }
             if (isOwned) {
-                children = newChildren;
                 return this;
             }
-            return new Node(owns, newChildren);
+            return new Node(owns, children.clone());
+        }
+        
+        // When does a direct-child end up a SizedNode?
+        //  - For all but the last child:
+        //    - It is not full after rebalancing
+        //    - It was already a SizedNode AND didn't give away its non-full children, OR
+        //    - It picked up N children from a SizedNode AND their cumulative size < expected (N << shift)
+        //      - (This also means a SizedNode can become a normal Node, if its non-full children are shifted off)
+        //  - For the last child:
+        //    - It is not full after rebalancing AND is not the rightmost node at its level in the tree
+        //    - It was already a SizedNode AND didn't give away its non-full children, OR
+        
+        Node copy(boolean isOwned, int skip, int keep, int take, Node from,
+                  boolean isRightMost, int shift) {
+            assert take > 0;
+            
+            // if isRightMost, I am taking all nodes from the rightMost node in my level
+            //  - in this case, I will become a SizedNode if from is a SizedNode
+            // else
+            //  - I will become a SizedNode if I am not full: either len < SPAN, OR
+            //    I am taking from a SizedNode and its children don't fill me up
+            
+            // TODO: Pushed-down tail means from may not be a SizedNode when it should be...
+            //  NOTE: Pushed-down tail is not rightMost in the concatenated tree
+            
+            int newLen = keep + take;
+            Sizes newSizes = null;
+            if (from instanceof SizedNode sn) {
+                Sizes fromSizes = sn.sizes();
+                if (newLen < SPAN || fromSizes.get(take-1) != (take << shift)) {
+                    newSizes = Sizes.of(shift, newLen);
+                    for (int i = 0; i < keep; i++) {
+                        newSizes.set(i, (i+1) << shift);
+                    }
+                    for (int i = 0; i < take; i++) {
+                        newSizes.set(keep+i, fromSizes.get(i));
+                    }
+                }
+            }
+            else if (!isRightMost && newLen < SPAN) {
+                newSizes = Sizes.of(shift, newLen);
+                for (int i = 0; i < newLen; i++) {
+                    newSizes.set(i, (i+1) << shift);
+                }
+            }
+            
+            Object[] newChildren;
+            if (skip != take) {
+                newChildren = Arrays.copyOfRange(children, skip, skip + newLen);
+            }
+            else { // skip == take, so length is preserved, and must skip (because take > 0)
+                newChildren = isOwned ? children : new Object[newLen];
+                System.arraycopy(children, skip, newChildren, 0, keep);
+            }
+            System.arraycopy(from.children, 0, newChildren, keep, take);
+            
+            short newOwns = adjustOwnership(owns, skip, keep, take, from);
+            if (newSizes != null) {
+                return new SizedNode(newOwns, newChildren, newSizes);
+            }
+            if (!isOwned) {
+                return new Node(newOwns, newChildren);
+            }
+            owns = newOwns;
+            children = newChildren;
+            return this;
         }
         
         // TODO: Methods for 'decrementAndGetChild(i)' 'incrementAndGetChild(i, addedSize)' would probably be handy
@@ -1041,7 +1277,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 return child;
             }
             return children[i] = switch (child) {
-                case SizedNode sn -> sn.copy();
                 case Node n -> n.copy();
                 case Object[] arr -> arr.clone();
                 default -> throw new AssertionError();
@@ -1051,20 +1286,19 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         Object getEditableChild(int i, int len) {
             Object child = children[i];
             boolean isOwned = claim(i);
-            switch (child) {
-                case Node n -> {
-                    if (!isOwned || n.children.length != len) {
-                        return children[i] = n.copy(isOwned, len);
-                    }
-                }
-                case Object[] arr -> {
-                    if (!isOwned || arr.length != len) {
-                        return children[i] = Arrays.copyOf(arr, len);
-                    }
-                }
+            return children[i] = switch (child) {
+                case Node n -> n.copy(isOwned, len);
+                case Object[] arr -> arr.length != len ? Arrays.copyOf(arr, len) : !isOwned ? arr.clone() : arr;
                 default -> throw new AssertionError();
-            }
-            return child;
+            };
+        }
+        
+        Object getEditableChild(int i, int skip, int keep, int take, Node from,
+                                boolean isRightMost, int shift) {
+            // TODO: This method is only called on nodes that are grandparents
+            Node child = (Node) children[i];
+            boolean isOwned = claim(i);
+            return children[i] = child.copy(isOwned, skip, keep, take, from, isRightMost, shift);
         }
     }
     
@@ -1093,14 +1327,87 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         
         @Override
         SizedNode copy(boolean isOwned, int len) {
-            Object[] newChildren = Arrays.copyOf(children, len);
-            Sizes newSizes = Sizes.wrap(sizes).copy(len);
+            if (children.length != len) {
+                Object[] newChildren = Arrays.copyOf(children, len);
+                Sizes newSizes = sizes().copy(len);
+                if (isOwned) {
+                    children = newChildren;
+                    sizes = newSizes.unwrap();
+                    return this;
+                }
+                return new SizedNode(owns, newChildren, newSizes);
+            }
             if (isOwned) {
-                children = newChildren;
-                sizes = newSizes.unwrap();
                 return this;
             }
-            return new SizedNode(owns, newChildren, newSizes);
+            return new SizedNode(owns, children.clone(), sizes().copy());
+        }
+        
+        Node copy(boolean isOwned, int skip, int keep, int take, Node from,
+                  boolean isRightMost, int shift) {
+            assert take > 0;
+            
+            // if isRightMost, I am taking all nodes from the rightMost node in my level
+            //  - in this case, I will become a SizedNode if from is a SizedNode
+            // else
+            //  - I will become a SizedNode if I am not full: either len < SPAN, OR
+            //    I am taking from a SizedNode and its children don't fill me up
+            
+            // TODO: Pushed-down tail means from may not be a SizedNode when it should be...
+            
+            int oldLen = skip + keep;
+            int newLen = keep + take;
+            Sizes oldSizes = sizes();
+            boolean stillSized = skip == 0 || oldSizes.get(oldLen-1) - oldSizes.get(skip-1) != (keep << shift);
+            Sizes newSizes = null;
+            if (from instanceof SizedNode sn) {
+                Sizes fromSizes = sn.sizes();
+                if (newLen < SPAN || fromSizes.get(take-1) != (take << shift)) {
+                    newSizes = Sizes.of(shift, newLen);
+                    for (int i = 0; i < keep; i++) {
+                        newSizes.set(i, (i+1) << shift);
+                    }
+                    for (int i = 0; i < take; i++) {
+                        newSizes.set(keep+i, fromSizes.get(i));
+                    }
+                }
+            }
+            else if (!isRightMost && newLen < SPAN) {
+                newSizes = Sizes.of(shift, newLen);
+                for (int i = 0; i < newLen; i++) {
+                    newSizes.set(i, (i+1) << shift);
+                }
+            }
+            else if (stillSized) {
+                // TODO: Skip
+                newSizes = isOwned && oldLen == newLen ? oldSizes : oldSizes.copy(newLen);
+                int last = newSizes.get(oldLen-1);
+                for (int i = oldLen; i < newLen; i++) {
+                    newSizes.set(i, last += (1 << shift));
+                }
+            }
+            
+            Object[] newChildren;
+            if (skip != take) {
+                newChildren = Arrays.copyOfRange(children, skip, skip + newLen);
+            }
+            else { // skip == take, so length is preserved, and must skip (because take > 0)
+                newChildren = isOwned ? children : new Object[newLen];
+                System.arraycopy(children, skip, newChildren, 0, keep);
+            }
+            System.arraycopy(from.children, 0, newChildren, keep, take);
+            
+            short newOwns = adjustOwnership(owns, skip, keep, take, from);
+            if (newSizes == null) {
+                return new Node(newOwns, newChildren);
+            }
+            if (!isOwned) {
+                return new SizedNode(newOwns, newChildren, newSizes);
+            }
+            owns = newOwns;
+            children = newChildren;
+            sizes = newSizes.unwrap();
+            return this;
         }
     }
     
