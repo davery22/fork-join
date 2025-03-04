@@ -908,6 +908,31 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         //    - If isRightMost, this can make left lose sized-ness
         //  - Mark whether left/right updated, for higher-level (ignore right if empty - will be handled by death row)
         
+        // A: If we shift over as much as possible, we ensure that the left node will not be revisited in higher rebalancing
+        //  - but we might not need higher rebalancing anyway, or, we might need to revisit the right node
+        // B: If we only shift if we can empty, we avoid doing additional work now - particularly if one side is unchanged
+        //  - but we might need to revisit one or both children in higher rebalancing
+        //
+        // Assuming we will need higher rebalancing:
+        //  A avoids revisiting left (but may need to revisit right) (+0/1)
+        //  B may need to revisit left and/or right (it will have visited one or both already) (+0/1/2)
+        // Assuming we will NOT need higher rebalancing:
+        //  A may visit left or right when it didn't need to (left was unchanged but not-full, or right was unchanged) (+0/1)
+        //  B avoids unnecessary visits (+0)
+        //
+        // B wins if we don't need higher rebalancing, OR only visit one side
+        // A wins if we do need higher rebalancing AND need to visit both sides
+        //
+        // If we need to visit both sides anyway, shift all left - it doesn't add work and MIGHT save revisiting left in higher rebalancing
+        // Else if we can empty right into left, do - it doesn't add work (still only "visiting" one side b.c. right = EMPTY after) and MIGHT prevent higher rebalancing
+        // Else, only visit the one side - we MIGHT need to revisit in higher rebalancing, but we still would if we shifted all left
+        //
+        // "shift all left" is only suboptimal if we only changed one side AND DID NOT need higher rebalancing
+        // "shift to empty" is only suboptimal if we changed both sides AND could not empty AND DID need higher rebalancing
+        //
+        // Also make sure to apply effects of changed children.
+        // If that is the only change (no removed children), it doesn't count as "visiting", as
+        
         state.rightDeathRow = state.right.children.length == 0 ? 1 : 0;
     }
     
@@ -1319,6 +1344,10 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             return (short) ((owns & mask(take)) << keep);
         }
         
+        static short removeFromOwnership(short owns, int remove) {
+            return (short) ((owns & mask(remove)) | ((owns >>> 1) & ~mask(remove)));
+        }
+        
         static int mask(int shift) {
             return (1 << shift) - 1;
         }
@@ -1367,7 +1396,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 // else if taken children are not full (and !isRightMost), we must be sized because we're leaving a gap
                 if (isRightMost || newLen < SPAN || fromSizes.get(take-1) != (take << shift)) {
                     newSizes = Sizes.of(shift, newLen);
-                    int lastSize = newSizes.fill(0, keep);
+                    int lastSize = newSizes.fill(0, keep, shift);
                     for (int i = 0; i < take; i++) {
                         newSizes.set(keep+i, lastSize += fromSizes.get(i));
                     }
@@ -1375,7 +1404,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             }
             else if (!isRightMost && newLen < SPAN) {
                 newSizes = Sizes.of(shift, newLen);
-                newSizes.fill(0, newLen);
+                newSizes.fill(0, newLen, shift);
             }
             
             // Handle children
@@ -1402,13 +1431,188 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             return new Node(newOwns, newChildren);
         }
         
+        // When do I end up Sized?
+        //  - If currently not Sized, then when:
+        //     1. any of my children become Sized, OR
+        //     2. !rightMost and !full, OR
+        //     3. I take from Sized, and (rightMost or !full or amount taken != expected)
+        //
+        //  - If currently Sized, then when:
+        //     1. any of my children stay Sized [*], OR
+        //     2. !rightMost and !full, OR
+        //     3. I take from Sized, and (rightMost or !full or amount taken != expected)
+        //
+        // When do I end up not Sized?
+        //  - If currently not Sized, then when:
+        //     1. all of my children stay not Sized, AND
+        //     2. rightMost or full, AND
+        //     3. I don't take from Sized, or (!rightMost and full and amount taken == expected)
+        //
+        //  - If currently Sized, then when:
+        //     1. all of my children become not Sized [*], AND
+        //     2. rightMost or full, AND
+        //     3. I don't take from Sized, or (!rightMost and full and amount taken == expected)
+        //
+        // [*] If currently Sized, how to tell if any of my children stay Sized / all become not Sized?
+        //  - all are not Sized if (rightMost ? full-up-to-last and last-is-not-Sized : full)
+        //  - else at least one is Sized
+        
+        // TODO: We can't actually count on from being Sized/!Sized, because its child changing may have changed that
+        
+        // For MARGIN > 0, !SIZED right node's leftmost child will never become SIZED, because either the child is
+        // fully-dense - in which case rebalancing would find no nodes to reclaim from it - or it is leftwise-dense
+        // - in which case rebalancing would find at most one node to reclaim from it, which would not be necessary to
+        // reclaim if MARGIN > 0
+        
+        // SIZED right node's leftmost child will never become !SIZED (if not already),
+        
+        // After rebalancing, we don't even know where the sized-ness is - eg left node's rightmost child may have
+        // transferred all of its sized-ness (Sized children) to the preceding node, such that it is no longer Sized,
+        // but the preceding node is.
+        
+        // it seems most realistic to just pass over the children again to decide if left/right is Sized
+        
+        Node updateChildren(long deathRow, int skip, int take, Node from,
+                            long fromDeathRow, int iChanged, boolean isRightMost, int shift) {
+            // Assume this and from are owned
+            // Exactly one of skip/take will be non-zero
+            // If take == 0, from/fromDeathRow are irrelevant
+            
+            // iChanged
+            //  - If I am Node, check if i is now Sized - makes us Sized
+            //  - If I am SizedNode, recalculate cumulative sizes starting from i
+            //  - "changed" -> "the size of child at i changed [but i was not deleted]" (?)
+            
+            Object[] oldChildren = children;
+            int len = children.length;
+            
+            // Get this before we start removing children, which may invalidate the index
+            Object changedChild = iChanged >= 0 && (deathRow & (1L << iChanged)) == 0 ? oldChildren[iChanged] : null;
+            
+            // Remove deleted children
+            int keep, newLen;
+            short newOwns = owns;
+            Object[] newChildren;
+            if (deathRow != 0) {
+                int toRemove = Long.bitCount(deathRow);
+                newLen = len - skip - toRemove + take;
+                newChildren = newLen == len ? oldChildren : new Object[newLen];
+                keep = 0;
+                for (int i = 0; i < len; i++) {
+                    if ((deathRow & (1L << i)) != 0 || skip-- > 0) {
+                        newOwns = removeFromOwnership(newOwns, i);
+                    }
+                    else {
+                        newChildren[keep++] = oldChildren[i];
+                    }
+                }
+            }
+            else {
+                newChildren = Arrays.copyOfRange(oldChildren, skip, newLen = (keep = len - skip) + take);
+                newOwns = skipOwnership(newOwns, skip, keep);
+            }
+            
+            Sizes newSizes = null;
+            int lastSize = 0;
+            if (changedChild instanceof SizedNode sn) {
+                iChanged -= Long.bitCount(deathRow & mask(iChanged)); // Adjust index for any children we removed
+                newSizes = Sizes.of(shift, newLen);
+                lastSize = newSizes.fill(0, iChanged, shift);
+                newSizes.set(iChanged, lastSize + sn.sizes().get(sn.children.length-1));
+                lastSize = newSizes.fill(iChanged+1, keep, shift); // TODO: Rightmost?.. This could only happen if we are right node and first child became Sized...
+                                                              //  But all of its children are full, unless it is still rightMost, in which case at most the
+                                                              //  last child could be emptied, but we would only do that if MARGIN = 0...
+            }
+            
+            if (take > 0) {
+                // Add adopted children
+                short fromOwns = from.owns;
+                Object[] fromChildren = from.children;
+                if (from instanceof SizedNode sn) {
+                    Sizes fromSizes = sn.sizes();
+                    if (fromDeathRow != 0) { // Taking from Sized with gaps, yikes
+                        // Update owns, children, and sizes
+                        int prevSize = 0;
+                        for (int i = 0; keep < newLen; i++) {
+                            int currSize = fromSizes.get(i);
+                            if ((fromDeathRow & (1L << i)) == 0) {
+                                if (newSizes != null) {
+                                    newSizes.set(keep, lastSize += currSize - prevSize);
+                                }
+                                else if () {
+                                    // TODO
+                                }
+                                newOwns |= ((1 << i) & fromOwns) != 0 ? (1 << keep) : 0;
+                                newChildren[keep++] = fromChildren[i];
+                            }
+                            prevSize = currSize;
+                        }
+                    }
+                    else { // Taking from Sized without gaps
+                        // Update owns, children
+                        System.arraycopy(fromChildren, 0, newChildren, keep, take);
+                        newOwns |= takeOwnership(keep, take, fromOwns);
+                        // Update sizes
+                        if (newSizes != null) {
+                            for (int i = 0; i < take; i++) {
+                                newSizes.set(keep+i, lastSize += fromSizes.get(i));
+                            }
+                        }
+                        // if isRightMost, we must be sized because we're taking all of from, and from is sized
+                        // else if newLen < SPAN (and !isRightMost), we must be sized because we're leaving a gap
+                        // else if taken children are not full (and !isRightMost), we must be sized because we're leaving a gap
+                        else if (isRightMost || newLen < SPAN || fromSizes.get(take-1) != (take << shift)) {
+                            newSizes = Sizes.of(shift, newLen);
+                            lastSize = newSizes.fill(0, keep, shift);
+                            for (int i = 0; i < take; i++) {
+                                newSizes.set(keep+i, lastSize += fromSizes.get(i));
+                            }
+                        }
+                    }
+                }
+                else { // Taking from !Sized
+                    // Update owns, children
+                    if (fromDeathRow != 0) {
+                        for (int i = 0; keep < newLen; i++) {
+                            if ((fromDeathRow & (1L << i)) == 0) {
+                                newOwns |= ((1 << i) & fromOwns) != 0 ? (1 << keep) : 0;
+                                newChildren[keep++] = fromChildren[i];
+                            }
+                        }
+                    }
+                    else {
+                        System.arraycopy(fromChildren, 0, newChildren, keep, take);
+                        newOwns |= takeOwnership(keep, take, fromOwns);
+                    }
+                    // Update sizes
+                    if (newSizes != null) {
+                        if (isRightMost) {
+                            // Rightmost non-sized node may not be full - need to look down the tree
+                            lastSize = newSizes.fill(keep, newLen-1, shift);
+                            newSizes.set(newLen-1, lastSize + sizeSubTree((Node) newChildren[newLen-1], shift - SHIFT));
+                        }
+                        else {
+                            newSizes.fill(keep, newLen, shift);
+                        }
+                    }
+                }
+            }
+            
+            if (newSizes != null) {
+                return new SizedNode(newOwns, newChildren, newSizes);
+            }
+            owns = newOwns;
+            children = newChildren;
+            return this;
+        }
+        
         Node copySized(boolean isOwned, int shift) {
             if (shift == 0) {
                 return copy(isOwned);
             }
             int oldLen = children.length;
             Sizes sizes = Sizes.of(shift, oldLen);
-            sizes.fill(0, oldLen);
+            sizes.fill(0, oldLen, shift);
             if (isOwned) {
                 return new SizedNode(owns, children, sizes);
             }
@@ -1421,7 +1625,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             }
             int oldLen = children.length;
             Sizes sizes = Sizes.of(shift, len);
-            sizes.fill(0, oldLen);
+            sizes.fill(0, oldLen, shift);
             if (children.length != len) {
                 Object[] newChildren = Arrays.copyOf(children, len);
                 if (isOwned) {
@@ -1556,18 +1760,25 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 // else if taken children are not full (and !isRightMost), we must be sized because we're leaving a gap
                 else if (isRightMost || newLen < SPAN || fromSizes.get(take-1) != (take << shift)) {
                     newSizes = Sizes.of(shift, newLen);
-                    lastSize = newSizes.fill(0, keep);
+                    lastSize = newSizes.fill(0, keep, shift);
                     for (int i = 0; i < take; i++) {
                         newSizes.set(keep+i, lastSize += fromSizes.get(i));
                     }
                 }
             }
             else if (newSizes != null) {
-                newSizes.fill(keep, newLen);
+                if (isRightMost) {
+                    // Rightmost non-sized node may not be full - need to look down the tree
+                    lastSize = newSizes.fill(keep, newLen-1, shift);
+                    newSizes.set(newLen-1, lastSize + sizeSubTree((Node) from.children[take-1], shift - SHIFT));
+                }
+                else {
+                    newSizes.fill(keep, newLen, shift);
+                }
             }
             else if (!isRightMost && newLen < SPAN) {
                 newSizes = Sizes.of(shift, newLen);
-                newSizes.fill(0, newLen);
+                newSizes.fill(0, newLen, shift);
             }
             
             // Handle children
@@ -1595,6 +1806,109 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             return this;
         }
         
+        Node updateChildren(long deathRow, int skip, int take, Node from,
+                            long fromDeathRow, boolean isRightMost, int shift) {
+            // Similar to Node.updateChildren(), but also updates sizes wherever children are updated
+            
+            // Assume this and from are owned
+            // Exactly one of skip/take will be non-zero
+            // If take == 0, from/fromDeathRow are irrelevant
+            
+            Object[] oldChildren = children;
+            Sizes oldSizes = sizes();
+            int len = children.length;
+            
+            // TODO: Removes may make us !Sized
+            // Remove deleted children
+            int keep, newLen;
+            short newOwns = owns;
+            Object[] newChildren;
+            Sizes newSizes;
+            if (deathRow != 0) {
+                int toRemove = Long.bitCount(deathRow);
+                newLen = len - skip - toRemove + take;
+                newChildren = newLen == len ? oldChildren : new Object[newLen];
+                newSizes = newLen == len ? oldSizes : Sizes.of(shift, newLen);
+                int lastSize = 0, prevSize = 0;
+                keep = 0;
+                for (int i = 0; i < len; i++) {
+                    int currSize = oldSizes.get(i);
+                    if ((deathRow & (1L << i)) != 0 || skip-- > 0) {
+                        newOwns = removeFromOwnership(newOwns, i);
+                    }
+                    else {
+                        newChildren[keep] = oldChildren[i];
+                        newSizes.set(keep++, lastSize += currSize - prevSize);
+                    }
+                    prevSize = currSize;
+                }
+            }
+            else {
+                newChildren = Arrays.copyOfRange(oldChildren, skip, newLen = (keep = len - skip) + take);
+                newOwns = skipOwnership(newOwns, skip, keep);
+                newSizes = oldSizes.copyOfRange(skip, newLen);
+            }
+            
+            if (take > 0) {
+                // TODO: Adds may make us Sized again
+                // Add adopted children
+                short fromOwns = from.owns;
+                Object[] fromChildren = from.children;
+                int lastSize = newSizes.get(keep-1); // keep > 0; we don't call this method on a node we would be emptying
+                if (fromDeathRow != 0) {
+                    if (from instanceof SizedNode sn) {
+                        Sizes fromSizes = sn.sizes();
+                        int prevSize = 0;
+                        for (int i = 0; keep < newLen; i++) {
+                            int currSize = fromSizes.get(i);
+                            if ((fromDeathRow & (1L << i)) == 0) {
+                                newOwns |= ((1 << i) & fromOwns) != 0 ? (1 << keep) : 0;
+                                newChildren[keep] = fromChildren[i];
+                                newSizes.set(keep++, lastSize += currSize - prevSize);
+                            }
+                            prevSize = currSize;
+                        }
+                    }
+                    else {
+                        for (int i = 0; keep < newLen; i++) {
+                            if ((fromDeathRow & (1L << i)) == 0) {
+                                newOwns |= ((1 << i) & fromOwns) != 0 ? (1 << keep) : 0;
+                                newChildren[keep] = fromChildren[i];
+                                newSizes.set(keep++, lastSize += (1 << shift));
+                            }
+                        }
+                        if (isRightMost) {
+                            newSizes.set(keep-1, lastSize - (1 << shift) + sizeSubTree((Node) from.children[take-1], shift - SHIFT));
+                        }
+                    }
+                }
+                else {
+                    System.arraycopy(fromChildren, 0, newChildren, keep, take);
+                    newOwns |= takeOwnership(keep, take, fromOwns);
+                    if (from instanceof SizedNode sn) {
+                        Sizes fromSizes = sn.sizes();
+                        for (int i = 0; i < take; i++) {
+                            newSizes.set(keep++, lastSize += fromSizes.get(i));
+                        }
+                    }
+                    else {
+                        lastSize = newSizes.fill(keep, newLen, shift);
+                        if (isRightMost) {
+                            newSizes.set(newLen-1, lastSize - (1 << shift) + sizeSubTree((Node) from.children[take-1], shift - SHIFT));
+                        }
+                    }
+                }
+            }
+            
+            if (newSizes == null) {
+                return new Node(newOwns, newChildren);
+            }
+            owns = newOwns;
+            children = newChildren;
+            sizes = newSizes.unwrap();
+            return this;
+        }
+        
         @Override
         SizedNode copySized(boolean isOwned, int shift) {
             return copy(isOwned);
@@ -1614,7 +1928,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         abstract Sizes copy(int len);
         abstract Sizes copyOfRange(int from, int to);
         abstract Sizes arrayCopy(Sizes src, int srcPos, int len);
-        abstract int fill(int from, int to);
+        abstract int fill(int from, int to, int shift);
         
         void inc(int i, int size) {
             set(i, get(i) + size);
@@ -1685,10 +1999,10 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 return this;
             }
             
-            int fill(int from, int to) {
+            int fill(int from, int to, int shift) {
                 int lastSize = from == 0 ? -1 : sizes[from-1];
                 for (int i = from; i < to; i++) {
-                    sizes[i] = (byte) (lastSize += (1 << SPAN));
+                    sizes[i] = (byte) (lastSize += (1 << shift));
                 }
                 return lastSize + 1;
             }
@@ -1729,10 +2043,10 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 return this;
             }
             
-            int fill(int from, int to) {
+            int fill(int from, int to, int shift) {
                 int lastSize = from == 0 ? -1 : sizes[from-1];
                 for (int i = from; i < to; i++) {
-                    sizes[i] = (char) (lastSize += (1 << SPAN));
+                    sizes[i] = (char) (lastSize += (1 << shift));
                 }
                 return lastSize + 1;
             }
@@ -1773,10 +2087,10 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 return this;
             }
             
-            int fill(int from, int to) {
+            int fill(int from, int to, int shift) {
                 int lastSize = from == 0 ? -1 : sizes[from-1];
                 for (int i = from; i < to; i++) {
-                    sizes[i] = (lastSize += (1 << SPAN));
+                    sizes[i] = (lastSize += (1 << shift));
                 }
                 return lastSize + 1;
             }
