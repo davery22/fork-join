@@ -4,7 +4,38 @@ import java.util.*;
 
 public class Main {
     public static void main(String[] args) {
-        removeLast();
+        join2();
+//        join();
+//        shuffle();
+//        forkShuffle();
+//        removeLast();
+    }
+    
+    static void join() {
+        ForkJoinList<Integer> left = new TrieForkJoinList<>();
+        ForkJoinList<Integer> right = new TrieForkJoinList<>();
+        for (int i = 0; i < 1000; i++) {
+            left.add(i);
+            right.add(2000-i);
+        }
+        left.join(right);
+        for (int i = 0; i < left.size(); i++) {
+            System.out.println(left.get(i));
+        }
+    }
+    
+    static void join2() {
+        ForkJoinList<Integer> left = new TrieForkJoinList<>();
+        ForkJoinList<Integer> right = new TrieForkJoinList<>();
+        for (int i = 0; i < 1000; i++) {
+            left.add(i);
+            right.add(2000-i);
+        }
+        left.join(right);
+        left.join(left);
+        for (int i = 0; i < left.size(); i++) {
+            System.out.println(left.get(i));
+        }
     }
     
     static void removeLast() {
