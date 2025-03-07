@@ -9,6 +9,9 @@ import java.util.*;
 //  - Force result to 0 when shift is too big
 
 public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList<E> {
+    // If changed, ParentNode.owns (and operations on it) must be updated to use a type of the appropriate width
+    //  - eg: 4 => short, 5 => int, 6 => long
+    // SHIFT > 6 is possible, but requires more work to switch to long[] owns, and long[] deathRows in rebalance()
     private static final int SHIFT = 4;
     private static final int SPAN = 1 << SHIFT;
     private static final int MASK = SPAN-1;
@@ -347,15 +350,15 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 // Replace root with its first child (unless that child is a non-full leaf)
                 // TODO: The literature didn't seem to account that we might be promoting a non-full leaf to root?
                 int newRootShift = rootShift - SHIFT;
-                Node child;
+                Node child = (Node) oldRoot.children[0];
                 if (newRootShift > 0) {
-                    root = (Node) oldRoot.children[0];
+                    root = child;
                     rootShift = newRootShift;
                     if (!oldRoot.owns(0)) {
                         disownRoot();
                     }
                 }
-                else if ((child = (Node) oldRoot.children[0]).children.length == SPAN) {
+                else if (child.children.length == SPAN) {
                     root = child;
                     rootShift = newRootShift;
                     if (!oldRoot.owns(0)) {
@@ -541,6 +544,45 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         return new TrieForkJoinList<>(this);
     }
     
+    // When slicing (range-forking), we should be able to avoid invariant violations by rebalancing 'somehow',
+    // and then letting normal only-child-promotion eliminate redundant levels.
+    //
+    // What kind of rebalancing?
+    //  - If we are slicing right, then from the bottom-up, we'd look for the first slot that has a left sibling,
+    //    and concatenate the siblings
+    //  - If we are slicing left, then from the bottom-up, we'd look for the first slot that has a right sibling,
+    //    and concatenate the siblings
+    //  - TODO: Suppose this concatenation merges the root slots into one, and the merged slot still has a sibling
+    //     - Do we repeat the process with the next sibling? This would increase the big-O from O(m*log_m(N)) to O(m*log^2_m(N))
+    //  - What is the difference in resulting structure between slice-right and repeated removeLast()?
+    //    - It is possible that our structure is a skinny leg + a dense tree, and repeated removeLast() will
+    //      end up with a deep tree containing 2 leaves.
+    //    - NOTE: Because removeLast() operates on a tail, there is no temptation to rebalance
+    
+    // | 1   3.
+    // | 1 | 1 ( 1   1.)
+    // | 1 | 1 | 1 | 1.
+    //
+    // | 1   3.
+    // | 1 | 1   2.)
+    // | 1 | 1 | 1 1.
+    //
+    // | 1   3.
+    // | 1 | 3.
+    // | 1 | 1 1 1.
+    //
+    // | 1   3.)
+    // | 1 | 3.
+    // | 1 | 1 1 1.
+    //
+    // | 4.
+    // | 4.
+    // | 1 1 1 1.
+    
+    private ForkJoinList<E> fork(int fromIndex, int toIndex) {
+        throw new UnsupportedOperationException();
+    }
+    
     // Pros with a draining join:
     //   a.join(b) can transfer ownership of b - no fork() / lazy copying
     //
@@ -668,11 +710,13 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         // Assign root
         size += right.size;
         Node leftNode = state.left, rightNode = state.right;
+        int newRootShift = Math.max(rootShift, right.rootShift);
         if (rightNode.children.length == 0) {
             root = leftNode;
+            rootShift = newRootShift;
         }
         else {
-            int newRootShift = rootShift += SHIFT;
+            rootShift = newRootShift += SHIFT;
             Object[] children = new Object[]{ leftNode, rightNode };
             ParentNode newRoot;
             if (leftNode instanceof SizedParentNode sn) {
@@ -722,8 +766,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             concatSubTree(state, leftShift - SHIFT, rightShift, isRightMost);
             left.children[left.children.length-1] = state.left;
             // Right child may be empty after recursive call - due to rebalancing - but if not we introduce a parent
+            ParentNode newRight = EMPTY_NODE;
             if (state.right != EMPTY_NODE) {
-                ParentNode newRight;
                 if (state.right instanceof SizedParentNode sn) {
                     Sizes sizes = Sizes.of(leftShift, 1);
                     sizes.set(0, sn.sizes().get(sn.children.length-1));
@@ -732,8 +776,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 else {
                     (newRight = new ParentNode(new Object[]{ state.right })).claim(0);
                 }
-                right = newRight;
             }
+            right = newRight;
         }
         else if (leftShift < rightShift) {
             state.right = right.getEditableChild(0);
@@ -751,6 +795,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             }
             left = newLeft;
             right.children[0] = state.right; // This might be EMPTY_NODE
+            leftShift = rightShift; // Adjust so we can consistently use leftShift below
         }
         else if (leftShift > 0) {
             state.left = left.getEditableChild(left.children.length-1);
@@ -759,8 +804,16 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             left.children[left.children.length-1] = state.left;
             right.children[0] = state.right; // This might be EMPTY_NODE
         }
-        else {
-            // Nothing to do at the bottom level
+        else { // leftShift == 0 (leaf-level)
+            int leftLen = left.children.length, rightLen = right.children.length;
+            if (leftLen + rightLen <= SPAN) {
+                // Right fits in left - copy it over
+                Object[] newChildren = Arrays.copyOf(left.children, leftLen + rightLen);
+                System.arraycopy(right.children, 0, newChildren, leftLen, rightLen);
+                state.left = new Node(newChildren);
+                state.right = EMPTY_NODE;
+                state.skipRight0 = true;
+            }
             return;
         }
         state.left = left;
@@ -844,13 +897,15 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         
         boolean skipRight0 = state.skipRight0, updatedLeft = false;
-        long leftDeathRow = 0, rightDeathRow = skipRight0 ? 1 : 0;
+        long leftDeathRow = 0, rightDeathRow = skipRight0 ? 1 : 0; // long assumes SPAN <= 64
         int childShift = shift - SHIFT;
         int i = 0, step = 1;
         int llen = leftChildren.length, rlen = leftChildren.length;
         ParentNode lNode = left, rNode = left;
         Node lastNode = !isRightMost ? null : (Node) (rightChildren.length > (skipRight0 ? 1 : 0) ? rightChildren[rightChildren.length-1] : leftChildren[leftChildren.length-1]);
         Object[] lchildren = leftChildren, rchildren = leftChildren;
+        
+        // Eliminate excess children
         
         do {
             int curLen;
@@ -914,6 +969,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             }
         } while (--curLength > maxLength);
         
+        // Fixup left/right
+        
         if (right == EMPTY_NODE) { // Did not update right - must have updated left only (and leftDeathRow != 0)
             // Right is empty
             left.shiftChildren(leftDeathRow, 0, 0, null, 0);
@@ -971,53 +1028,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         state.skipRight0 = (state.right = right) == EMPTY_NODE;
     }
     
-    // At the end of rebalance(), state.skipRight0 is true IFF state.right == EMPTY_NODE
-    // In higher level concatSubTree, state.right may stay EMPTY_NODE (if now above root), or state.right = parentRight
-    // On subsequent rebalance:
-    //   If state.right == EMPTY_NODE (skipRight0 is true):
-    //     If no rebalancing needed, both stay same
-    //     If rebalancing needed, both stay same
-    //   If state.right != EMPTY_NODE and skipRight0 is true:
-    //     If no rebalancing needed, right shifts and refreshes sizes, right/skipRight0 recalculated
-    //     If rebalancing needed, rightDeathRow != 0, right shifts and refreshes sizes, right/skipRight0 recalculated
-    //   If state.right != EMPTY_NODE and skipRight0 is false:
-    //     If no rebalancing needed, right refreshes sizes, skipRight0 = false
-    //     If rebalancing needed, right possibly shifts and always refreshes sizes, right/skipRight0 recalculated
-    
-    // TODO: We should only call Node.refreshSizes() if at least one child changed
-    // TODO: [O] We should only call Node.shiftChildren() if deathRow != 0 OR skip != 0 OR take != 0
-    //  - If we don't need refreshSizes(), we don't need shiftChildren()
-    //  - We only want state to indicate that a node changed if it actually did (in a way meaningful to higher level)
-    //  - [X] We don't want to copy (in shiftChildren()) if no children changed
-    //  - We ideally don't want to scan children (in refreshSizes()) if only one known child changed
-    
-    // "changed" -> "my parent needs to call refreshSizes"
-    // I don't know what my parent is though
-    // If it is SizedNode, then any change might be a reason for it to recalculate sizes
-    //  - Except maybe if I was Node and stayed Node ?
-    // If it is Node, then only if I changed to SizedNode
-    //  - Again may be fine if I was Node and stayed Node
-    
-    // TODO: Update left/right:
-    //  - Apply effects of resultant children from lower-level concatSubTree() (may affect parent size / sized-ness)
-    //  - Remove deathRow children from left/right, and empty right to left if possible
-    //    - If isRightMost, this can make left lose sized-ness
-    //  - Mark whether left/right updated, for higher-level (ignore right if empty - will be handled by death row)
-    
-    // A: If we shift over as much as possible, we ensure that the left node will not be revisited in higher rebalancing
-    //  - but we might not need higher rebalancing anyway, or, we might need to revisit the right node
-    // B: If we only shift if we can empty, we avoid doing additional work now - particularly if one side is unchanged
-    //  - but we might need to revisit one or both children in higher rebalancing
-    //
-    // Assuming we will need higher rebalancing:
-    //  A avoids revisiting left (but may need to revisit right) (+0/1)
-    //  B may need to revisit left and/or right (it will have visited one or both already) (+0/1/2)
-    // Assuming we will NOT need higher rebalancing:
-    //  A may visit left or right when it didn't need to (left was unchanged but not-full, or right was unchanged) (+0/1)
-    //  B avoids unnecessary visits (+0)
-    //
-    // B wins if we don't need higher rebalancing, OR only visit one side
-    // A wins if we do need higher rebalancing AND need to visit both sides
+    // Fixing-up left/right at the end of rebalance:
     //
     // If we need to visit both sides anyway, shift all left - it doesn't add work and MIGHT save revisiting left in higher rebalancing
     // Else if we can empty right into left, do - it doesn't add work (still only "visiting" one side b.c. right = EMPTY after) and MIGHT prevent higher rebalancing
@@ -1187,7 +1198,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         // SPAN=32 -> int
         // SPAN=64 -> long
         // SPAN>64 -> long[]
-        short owns; // Not used on root leaf node (ie when rootShift == 0)
+        short owns;
         
         ParentNode(short owns, Object[] children) {
             super(children);
@@ -1309,7 +1320,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                     newSizes = Sizes.of(shift, newLen);
                     int lastSize = newSizes.fill(0, keep, shift);
                     for (int i = 0; i < take; i++) {
-                        newSizes.set(keep+i, lastSize += fromSizes.get(i));
+                        newSizes.set(keep+i, lastSize + fromSizes.get(i));
                     }
                 }
             }
@@ -1388,14 +1399,13 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             // At most one of skip/take will be non-zero
             // If take == 0, from/fromDeathRow are unused
             
-            Object[] oldChildren = children;
-            int len = children.length;
-            
             // Remove deleted children
             int keep, newLen;
             short newOwns = owns;
             Object[] newChildren;
             if (deathRow != 0) {
+                Object[] oldChildren = children;
+                int len = oldChildren.length;
                 int toRemove = Long.bitCount(deathRow);
                 newLen = len - skip - toRemove + take;
                 newChildren = newLen == len ? oldChildren : new Object[newLen];
@@ -1410,7 +1420,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 }
             }
             else if (skip != take) {
-                newChildren = Arrays.copyOfRange(oldChildren, skip, newLen = (keep = len - skip) + take);
+                newLen = (keep = children.length - skip) + take;
+                newChildren = Arrays.copyOfRange(children, skip, newLen);
                 newOwns = skipOwnership(newOwns, skip, keep);
             }
             else { // deathRow == skip == take == 0; nothing to do
@@ -1462,9 +1473,10 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             }
             else if (shift == SHIFT) {
                 // We are sized if any children are not full (excepting last, if rightmost)
-                for (int i = 0; i < len; i++) {
+                int fence = isRightMost ? len-1 : len;
+                for (int i = 0; i < fence; i++) {
                     Node child = (Node) children[i];
-                    if (child.children.length < SPAN && (!isRightMost || i < len-1)) {
+                    if (child.children.length < SPAN) {
                         sizes = Sizes.of(shift, len);
                         int lastSize = sizes.fill(0, i, shift);
                         sizes.set(i, lastSize += child.children.length);
@@ -1508,7 +1520,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         ParentNode refreshSizesIfRightmostChildChanged(boolean isRightMost, int shift) {
             // Only called on a left node
             if (shift == SHIFT) {
-                // Leaf-level rebalance is a no-op - child is not changed
+                // Leaf-level rightmost child cannot have changed, as that would imply it
+                // was not full, which is impossible since we are a left node and !Sized.
                 return this;
             }
             Object[] oldChildren = children;
@@ -1525,7 +1538,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         ParentNode refreshSizesIfLeftmostChildChanged(boolean isRightMost, int shift) {
             // Only called on a right node
             if (shift == SHIFT) {
-                // Leaf-level rebalance is a no-op - child is not changed
+                // Leaf-level leftmost child cannot have changed, as we only touch it if
+                // we can empty it (and removing the empty child is handled elsewhere).
                 return this;
             }
             Object[] oldChildren = children;
@@ -1641,7 +1655,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             
             // Handle sizes
             int lastSize = oldSizes.get(oldLen-1);
-            Sizes newSizes = skip == 0 || (lastSize -= oldSizes.get(skip-1)) != (keep << shift)
+            Sizes newSizes = (skip == 0 ? lastSize : (lastSize -= oldSizes.get(skip-1))) != (keep << shift)
                 ? skip != take
                     ? oldSizes.copyOfRange(skip, skip + newLen)
                     : (isOwned ? oldSizes : Sizes.of(shift, newLen)).arrayCopy(oldSizes, skip, keep)
@@ -1651,7 +1665,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 Sizes fromSizes = sn.sizes();
                 if (newSizes != null) {
                     for (int i = 0; i < take; i++) {
-                        newSizes.set(keep+i, lastSize += fromSizes.get(i));
+                        newSizes.set(keep+i, lastSize + fromSizes.get(i));
                     }
                 }
                 // if isRightMost, we must be sized because we're taking all of from, and from is sized
@@ -1661,7 +1675,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                     newSizes = Sizes.of(shift, newLen);
                     lastSize = newSizes.fill(0, keep, shift);
                     for (int i = 0; i < take; i++) {
-                        newSizes.set(keep+i, lastSize += fromSizes.get(i));
+                        newSizes.set(keep+i, lastSize + fromSizes.get(i));
                     }
                 }
             }
@@ -1718,10 +1732,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         @Override
         ParentNode refreshSizesIfRightmostChildChanged(boolean isRightMost, int shift) {
             // Only called on a left node
-            if (shift == SHIFT) {
-                // Leaf-level rebalance is a no-op - child is not changed
-                return this;
-            }
             Object[] oldChildren = children;
             int len = oldChildren.length;
             Node child = (Node) oldChildren[len-1];
@@ -1730,7 +1740,11 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             int prevSize = (len == 1 ? 0 : oldSizes.get(len-2));
             int currSize = lastSize - prevSize;
             int newSize;
-            if (child instanceof SizedParentNode sn) {
+            if (shift == SHIFT) {
+                // Unlike all other 'refresh if child changed' cases involving leaf children, this one is legitimate
+                newSize = child.children.length;
+            }
+            else if (child instanceof SizedParentNode sn) {
                 newSize = sn.sizes().get(sn.children.length-1);
             }
             else if (isRightMost) {
@@ -1758,7 +1772,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         ParentNode refreshSizesIfLeftmostChildChanged(boolean isRightMost, int shift) {
             // Only called on a right node
             if (shift == SHIFT) {
-                // Leaf-level rebalance is a no-op - child is not changed
+                // Leaf-level leftmost child cannot have changed, as we only touch it if
+                // we can empty it (and removing the empty child is handled elsewhere).
                 return this;
             }
             Object[] oldChildren = children;
@@ -2070,10 +2085,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     // This appears to take up the same amount of space - just swapping whether children or bitset is nested.
     // Since the number of children may vary, it's not clear how we would distinguish the size table pointer from a child.
     
-    // If I have to copy a node, that means I didn't own it, which means I didn't own its children either
-    // If I own a node, but replace it, I might be able to transfer ownership of its children, either by
-    // (a) updating the parentId of the children, OR (b) reissuing the parent.id to the replacement parent.
-    
     // If I am sized, all of my ancestors are sized, but my progeny may not be
-    // -> If I am not sized, none of my progeny are sized
+    // If I am not sized, none of my progeny are sized
 }
