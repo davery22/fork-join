@@ -760,38 +760,17 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         return (len << shift);
     }
     
-    // Used to communicate between concatSubTree() and rebalance()
-    //  - concatSubTree() updates left/right before passing to rebalance(), and restores afterward
-    //  - concatSubTree() clears leftDeathRow/rightDeathRow before passing to rebalance(),
-    //    which may update these before returning, indicating to concatSubTree() which children to remove from left/right
+    // Single input+output object, reused in recursive calls to concatSubTree() and rebalance()
+    //  - On the way down:
+    //    - concatSubTree() extracts initial left/right, sets state.left=left.lastChild and state.right=right.firstChild, then recurses
+    //  - On the way up:
+    //    - concatSubTree() sets initial left.lastChild=state.left, right.firstChild=state.right, then restores initial left/right
+    //    - rebalance() possibly updates left/right (eg to Sized/not-Sized/EMPTY) as a result of rebalancing their children
     private static class ConcatState {
         Node left, right;
-        boolean skipRight0;
     }
     
     private static final ParentNode EMPTY_NODE = new ParentNode(new Object[0]);
-    
-    // getSizeIfNotFull()
-    //  - If we are rightmost, we need to look down the tree to get size
-    //    - Even if we're full at this level, we might not be full at lower level
-    //    - If we're not full at any level, we need to compute size
-    //    - We only want to do this once
-    //      - If we're not full, great - we will compute a size, so our parent will be Sized, so will short-circuit
-    //      - If we are full, our parent will be not-Sized - need some other reason to short-circuit
-    //
-    //  - At caller shift = 0, we don't call getSizeIfNotFull on children, because we have none
-    //  - At caller shift > 0, we may call getSizeIfNotFull on shift - SHIFT, as part of refreshing child sizes after shifting children left
-    //    - The caller may be a 'to' node that picked up not-full children (implying 'from' node was Sized)
-    //  - In getSizeIfNotFull, rightmost only matters for shift > 0 (caller shift > SHIFT)
-    //  - In getSizeIfNotFull, if we are rightmost at shift > 0 (caller shift > SHIFT),
-    //    we will compute size ((len-1) << shift) + lastChildSize, and our parent may become Sized (or not)
-    //  - Assume we may be rightmost down to shift = 0 (ancestors all have 1 child)
-    //
-    //  - Is there a way to know, in getSizeIfNotFull(), if this is the first time calculating rightmost size on our way up the tree?
-    //    - caller has to tell us
-    //    - if caller shift = SHIFT+SHIFT and rightmost, then this is the first time
-    //    - if caller shift > SHIFT+SHIFT and lower level was not rightmost, then this is the first time
-    //    - lower level was rightmost if right node had <= 1 child
     
     private static void concatSubTree(ConcatState state, int leftShift, int rightShift, boolean isRightmost) {
         // At the end of rebalance(), we call some flavor of "refreshSizes" on left/right, which will ensure left/right
@@ -801,8 +780,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         // TODO: Avoid editable if no rebalancing needed?
         Node left = state.left, right = state.right;
         if (leftShift > rightShift) {
-            state.left = left.getEditableChild(left.children.length-1);
             int childShift = leftShift - SHIFT;
+            state.left = left.getEditableChild(left.children.length-1);
             concatSubTree(state, childShift, rightShift, true);
             
             // Right child may be empty after recursive call - due to rebalancing - but if not we introduce a parent
@@ -822,9 +801,9 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             left.children[left.children.length-1] = state.left;
         }
         else if (leftShift < rightShift) {
-            state.right = right.getEditableChild(0);
             int childShift = rightShift - SHIFT;
             boolean isChildRightmost = isRightmost && right.children.length == 1;
+            state.right = right.getEditableChild(0);
             concatSubTree(state, leftShift, childShift, isChildRightmost);
             
             // Left child is never empty after recursive call, because we introduce a parent for a non-empty child,
@@ -843,11 +822,11 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             right.children[0] = state.right; // This might be EMPTY_NODE
             leftShift = rightShift; // Adjust so we can consistently use leftShift below
         }
-        else if (leftShift > 0) {
-            state.left = left.getEditableChild(left.children.length-1);
-            state.right = right.getEditableChild(0);
+        else if (leftShift > 0) { // leftShift == rightShift
             int childShift = leftShift - SHIFT;
             boolean isChildRightmost = isRightmost && right.children.length == 1;
+            state.left = left.getEditableChild(left.children.length-1);
+            state.right = right.getEditableChild(0);
             concatSubTree(state, childShift, childShift, isChildRightmost);
             
             left.children[left.children.length-1] = state.left;
@@ -861,14 +840,14 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 System.arraycopy(right.children, 0, newChildren, leftLen, rightLen);
                 state.left = new Node(newChildren);
                 state.right = EMPTY_NODE;
-                state.skipRight0 = true;
             }
             return;
         }
         
+        boolean isRightFirstChildEmpty = state.right == EMPTY_NODE;
         state.left = left;
         state.right = right;
-        rebalance(state, leftShift, isRightmost);
+        rebalance(state, leftShift, isRightmost, isRightFirstChildEmpty);
     }
     
     // Should we combine left/right Nodes at the end of rebalance?
@@ -886,19 +865,17 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     // for the tree to increase in height, because the search-step invariant is more lenient on how wasted space can be
     // distributed, which makes it easier to accumulate more of it.
     
-    private static void rebalance(ConcatState state, int shift, boolean isRightmost) {
+    private static void rebalance(ConcatState state, int shift, boolean isRightmost, boolean isRightFirstChildEmpty) {
         // Assume left and right are editable
         
         ParentNode left = (ParentNode) state.left, right = (ParentNode) state.right;
-        int childShift = shift - SHIFT;
         
-        if (right == EMPTY_NODE || (state.skipRight0 && right.children.length == 1)) {
+        if (right == EMPTY_NODE || (isRightFirstChildEmpty && right.children.length == 1)) {
             // If right is now empty, then we may have increased the grandchildren under left's rightmost child.
             // Since the trees each start out balanced, and this change would only make left more dense,
             // there is no rebalancing to do.
             state.left = left.refreshSizesIfRightmostChildChanged(isRightmost, shift);
             state.right = EMPTY_NODE;
-            state.skipRight0 = true;
             return;
         }
         
@@ -918,53 +895,49 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         if (curLength <= maxLength) {
             // Yay, no rebalancing needed
             // But we do still have some work to refresh left/right if their rightmost/leftmost child changed
-            if (state.skipRight0) {
+            if (isRightFirstChildEmpty) {
                 if (leftChildren.length + rightChildren.length-1 <= SPAN) {
                     // Removing right's first child makes it fit in left
                     left.shiftChildren(0, 0, rightChildren.length-1, right, 1);
-                    left = left.refreshSizes(isRightmost, shift);
-                    right = EMPTY_NODE;
+                    state.left = left.refreshSizes(isRightmost, shift);
+                    state.right = EMPTY_NODE;
                 }
                 else {
                     // Removing right's first child does not make it fit in left
-                    left = left.refreshSizesIfRightmostChildChanged(false, shift);
                     right.shiftChildren(1, 0, 0, null, 0);
-                    right = right.refreshSizes(isRightmost, shift);
+                    state.right = right.refreshSizes(isRightmost, shift);
+                    state.left = left.refreshSizesIfRightmostChildChanged(false, shift);
                 }
             }
             else if (leftChildren.length + rightChildren.length <= SPAN) {
                 // Right fits in left
                 left.shiftChildren(0, 0, rightChildren.length, right, 0);
-                left = left.refreshSizes(isRightmost, shift);
-                right = EMPTY_NODE;
+                state.left = left.refreshSizes(isRightmost, shift);
+                state.right = EMPTY_NODE;
             }
             else {
                 // Right does not fit in left
-                left = left.refreshSizesIfRightmostChildChanged(false, shift);
-                right = right.refreshSizesIfLeftmostChildChanged(isRightmost, shift);
+                state.left = left.refreshSizesIfRightmostChildChanged(false, shift);
+                state.right = right.refreshSizesIfLeftmostChildChanged(isRightmost, shift);
             }
-            
-            state.left = left;
-            state.skipRight0 = (state.right = right) == EMPTY_NODE;
             return;
         }
         
-        boolean skipRight0 = state.skipRight0, updatedLeft = false;
-        long leftDeathRow = 0, rightDeathRow = skipRight0 ? 1 : 0; // long assumes SPAN <= 64
-        int i = 0, step = 1;
-        int llen = leftChildren.length, rlen = leftChildren.length;
+        // Rebalance to eliminate excess children
+        
+        boolean updatedLeft = false;
+        long leftDeathRow = 0, rightDeathRow = isRightFirstChildEmpty ? 1 : 0; // long assumes SPAN <= 64
+        int i = 0, step = 1, childShift = shift - SHIFT,
+            llen = leftChildren.length, rlen = leftChildren.length;
         ParentNode lNode = left, rNode = left;
-        Node lastNode = isRightmost ? (Node) rightChildren[rightChildren.length-1] : null;
         Object[] lchildren = leftChildren, rchildren = leftChildren;
-        
-        // Eliminate excess children
-        
+        Node lastNode = isRightmost ? (Node) rightChildren[rightChildren.length-1] : null;
         do {
             int curLen;
             while ((curLen = ((Node) lchildren[i]).children.length) >= DO_NOT_REDISTRIBUTE) {
                 if ((i += step) >= llen) {
                     // We will hit this case at most once
-                    if ((i -= llen) == 0 && skipRight0) {
+                    if ((i -= llen) == 0 && isRightFirstChildEmpty) {
                         i = 1;
                     }
                     llen = rightChildren.length;
@@ -980,7 +953,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 if (j >= llen) {
                     // We may hit this case multiple times, if we empty the first child
                     // on the right and the last child on the left is still below threshold
-                    if ((j -= llen) == 0 && skipRight0) {
+                    if ((j -= llen) == 0 && isRightFirstChildEmpty) {
                         j = 1;
                     }
                     rlen = rightChildren.length;
@@ -1021,21 +994,21 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             }
         } while (--curLength > maxLength);
         
-        // Fixup left/right
+        // Fixup left/right - remove emptied children, empty right into left if possible, and refresh sizes
         
         if (rightDeathRow == 0) { // Did not update right - must have updated left only (and leftDeathRow != 0)
             int remainingLeft = leftChildren.length - Long.bitCount(leftDeathRow);
             if (remainingLeft + rightChildren.length <= SPAN) {
                 // Removing some from left makes right fit in
                 left.shiftChildren(leftDeathRow, 0, rightChildren.length, right, 0);
-                left = left.refreshSizes(isRightmost, shift);
-                right = EMPTY_NODE;
+                state.left = left.refreshSizes(isRightmost, shift);
+                state.right = EMPTY_NODE;
             }
             else {
                 // Removing some from left does not make right fit in
                 left.shiftChildren(leftDeathRow, 0, 0, null, 0);
-                left = left.refreshSizes(false, shift);
-                right = right.refreshSizesIfLeftmostChildChanged(isRightmost, shift);
+                state.left = left.refreshSizes(false, shift);
+                state.right = right.refreshSizesIfLeftmostChildChanged(isRightmost, shift);
             }
         }
         else if (!updatedLeft) { // Updated right only
@@ -1043,14 +1016,14 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             if (leftChildren.length + remainingRight <= SPAN) {
                 // Removing some from right makes it fit in left
                 left.shiftChildren(0, 0, remainingRight, right, rightDeathRow);
-                left = left.refreshSizes(isRightmost, shift);
-                right = EMPTY_NODE;
+                state.left = left.refreshSizes(isRightmost, shift);
+                state.right = EMPTY_NODE;
             }
             else {
                 // Removing some from right does not make it fit in left
                 right.shiftChildren(rightDeathRow, 0, 0, null, 0);
-                right = right.refreshSizes(isRightmost, shift);
-                left = left.refreshSizesIfRightmostChildChanged(false, shift);
+                state.right = right.refreshSizes(isRightmost, shift);
+                state.left = left.refreshSizesIfRightmostChildChanged(false, shift);
             }
         }
         else { // Updated both
@@ -1061,18 +1034,15 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             int xfer = Math.min(SPAN - remainingLeft, remainingRight); // Possibly both 0
             left.shiftChildren(leftDeathRow, 0, xfer, right, rightDeathRow); // Possibly a no-op, if leftDeathRow == xfer == 0
             if (xfer == remainingRight) {
-                left = left.refreshSizes(isRightmost, shift);
-                right = EMPTY_NODE;
+                state.left = left.refreshSizes(isRightmost, shift);
+                state.right = EMPTY_NODE;
             }
             else {
-                left = left.refreshSizes(false, shift);
                 right.shiftChildren(rightDeathRow, xfer, 0, null, 0);
-                right = right.refreshSizes(isRightmost, shift);
+                state.right = right.refreshSizes(isRightmost, shift);
+                state.left = left.refreshSizes(false, shift);
             }
         }
-        
-        state.left = left;
-        state.skipRight0 = (state.right = right) == EMPTY_NODE;
     }
     
     // Fixing-up left/right at the end of rebalance:
@@ -1340,16 +1310,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             return copySized(isOwned, shift);
         }
         
-        // When does a direct-child end up a SizedNode?
-        //  - For all but the last child:
-        //    - It is not full after rebalancing
-        //    - It was already a SizedNode AND didn't give away its non-full children, OR
-        //    - It picked up N children from a SizedNode AND their cumulative size < expected (N << shift)
-        //      - (This also means a SizedNode can become a normal Node, if its non-full children are shifted off)
-        //  - For the last child:
-        //    - It is not full after rebalancing AND is not the rightmost node at its level in the tree
-        //    - It was already a SizedNode AND didn't give away its non-full children, OR
-        
         @Override
         ParentNode copy(boolean isOwned, int skip, int keep, int take, Node from,
                         boolean isFromOwned, boolean isRightmost, int shift) {
@@ -1361,7 +1321,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             if (from instanceof SizedParentNode sn) {
                 Sizes fromSizes = sn.sizes();
                 // if taken children are not full, we must be sized
-                if (fromSizes.get(take-1) != (take << shift)) {
+                if (isRightmost || fromSizes.get(take-1) != (take << shift)) {
                     newSizes = Sizes.of(shift, newLen);
                     int lastSize = newSizes.fill(0, keep, shift);
                     for (int i = 0; i < take; i++) {
@@ -1395,47 +1355,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             }
             return new ParentNode(newOwns, newChildren);
         }
-        
-        // When do I end up Sized?
-        //  - If currently not Sized, then when:
-        //     1. any of my children become Sized, OR
-        //     2. !rightMost and !full, OR
-        //     3. I take from Sized, and (rightMost or !full or amount taken != expected)
-        //
-        //  - If currently Sized, then when:
-        //     1. any of my children stay Sized [*], OR
-        //     2. !rightMost and !full, OR
-        //     3. I take from Sized, and (rightMost or !full or amount taken != expected)
-        //
-        // When do I end up not Sized?
-        //  - If currently not Sized, then when:
-        //     1. all of my children stay not Sized, AND
-        //     2. rightMost or full, AND
-        //     3. I don't take from Sized, or (!rightMost and full and amount taken == expected)
-        //
-        //  - If currently Sized, then when:
-        //     1. all of my children become not Sized [*], AND
-        //     2. rightMost or full, AND
-        //     3. I don't take from Sized, or (!rightMost and full and amount taken == expected)
-        //
-        // [*] If currently Sized, how to tell if any of my children stay Sized / all become not Sized?
-        //  - all are not Sized if (rightMost ? full-up-to-last and last-is-not-Sized : full)
-        //  - else at least one is Sized
-        
-        // TODO: We can't actually count on from being Sized/!Sized, because its child changing may have changed that
-        
-        // For MARGIN > 0, !SIZED right node's leftmost child will never become SIZED, because either the child is
-        // fully-dense - in which case rebalancing would find no nodes to reclaim from it - or it is leftwise-dense
-        // - in which case rebalancing would find at most one node to reclaim from it, which would not be necessary to
-        // reclaim if MARGIN > 0
-        
-        // SIZED right node's leftmost child will never become !SIZED (if not already),
-        
-        // After rebalancing, we don't even know where the sized-ness is - eg left node's rightmost child may have
-        // transferred all of its sized-ness (Sized children) to the preceding node, such that it is no longer Sized,
-        // but the preceding node is.
-        
-        // it seems most realistic to just pass over the children again to decide if left/right is Sized
         
         void shiftChildren(long deathRow, int skip, int take, ParentNode from, long fromDeathRow) {
             // Assume this and from are owned
@@ -1697,7 +1616,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                         newSizes.set(keep+i, lastSize + fromSizes.get(i));
                     }
                 }
-                else if (fromSizes.get(take-1) != (take << shift)) {
+                else if (isRightmost || fromSizes.get(take-1) != (take << shift)) {
                     // taken children are not full - we need to be sized
                     newSizes = Sizes.of(shift, newLen);
                     lastSize = newSizes.fill(0, keep, shift);
