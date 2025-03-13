@@ -43,9 +43,9 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         return owns == (owns |= 2);
     }
     
-//    private void disownTail() {
-//        owns &= ~1;
-//    }
+    private void disownTail() {
+        owns &= ~1;
+    }
     
     private void disownRoot() {
         owns &= ~2;
@@ -90,10 +90,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     }
     
     public TrieForkJoinList() {
-        size = tailSize = rootShift = 0;
-        root = null;
         tail = INITIAL_TAIL;
-        owns = 0;
     }
     
     public TrieForkJoinList(Collection<? extends E> c) {
@@ -107,7 +104,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         rootShift = toCopy.rootShift;
         root = toCopy.root;
         tail = toCopy.tail;
-        owns = 0;
     }
     
     // add(index, element) - specialized self-concat, unless after tailOffset
@@ -125,7 +121,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     // listIterator(index)
     // subList(from, to)
     // spliterator()
-    // join(collection)
     // join(index, collection)
     
     // TODO: Make sure we handle modCount
@@ -136,6 +131,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     // -reversed()
     // -size()
     // -fork()
+    // -join(collection)
     
     // TODO: Some of these might need revisited just to handle modCount - see ArrayList
     //  - not to mention 'range' variants
@@ -531,50 +527,240 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         return size;
     }
     
+    // fork(from, to) would unify /forkSuffix(from) and forkPrefix(to)\, splitting when they diverge
+    // removeRange(from, to) would unify \forkPrefix(to) and forkSuffix(from)/, joining the sides together
+    
+    @Override
+    protected void removeRange(int fromIndex, int toIndex) {
+        // TODO: Optimize - do removeRange() directly and in-place
+        TrieForkJoinList<E> left = forkPrefix(fromIndex);
+        TrieForkJoinList<E> right = forkSuffix(toIndex);
+        left.join(right);
+        size = left.size;
+        tailSize = left.tailSize;
+        rootShift = left.rootShift;
+        root = left.root;
+        tail = left.tail;
+        owns = left.owns;
+        
+        // removeRange(0, toIndex) degrades to fork(fromIndex, size) (but retaining ownership)
+        // removeRange(fromIndex, size) degrades to fork(0, fromIndex) (but retaining ownership)
+        //
+        // These suggest that maintaining balance would cost O(m*log^2_m(N))
+        //
+        // Start at the root
+        // If the current node
+    }
+    
     @Override
     public ForkJoinList<E> fork() {
-        // Disown any owned top-level objects, to force path-copying upon future mutations
+        // Disown root/tail, to force path-copying upon future mutations
         owns = 0;
         return new TrieForkJoinList<>(this);
     }
     
-    // When slicing (range-forking), we should be able to avoid invariant violations by rebalancing 'somehow',
-    // and then letting normal only-child-promotion eliminate redundant levels.
-    //
-    // What kind of rebalancing?
-    //  - If we are slicing right, then from the bottom-up, we'd look for the first slot that has a left sibling,
-    //    and concatenate the siblings
-    //  - If we are slicing left, then from the bottom-up, we'd look for the first slot that has a right sibling,
-    //    and concatenate the siblings
-    //  - TODO: Suppose this concatenation merges the root slots into one, and the merged slot still has a sibling
-    //     - Do we repeat the process with the next sibling? This would increase the big-O from O(m*log_m(N)) to O(m*log^2_m(N))
-    //  - What is the difference in resulting structure between slice-right and repeated removeLast()?
-    //    - It is possible that our structure is a skinny leg + a dense tree, and repeated removeLast() will
-    //      end up with a deep tree containing 2 leaves.
-    //    - NOTE: Because removeLast() operates on a tail, there is no temptation to rebalance
+    private TrieForkJoinList<E> forkPrefix(int toIndex) {
+        if (toIndex == 0) {
+            return new TrieForkJoinList<>();
+        }
+        if (toIndex == size) {
+            owns = 0;
+            return new TrieForkJoinList<>(this);
+        }
+        
+        TrieForkJoinList<E> newList = new TrieForkJoinList<>();
+        int tailOffset = tailOffset();
+        if (toIndex > tailOffset) { // TODO: >= ?
+            int newTailSize = newList.tailSize = (newList.size = toIndex) - tailOffset;
+            newList.rootShift = rootShift;
+            disownRoot();
+            newList.root = root;
+            newList.claimTail();
+            // Would use tail.copy(false, newTailSize), but we want capacity == SPAN
+            Object[] newTailChildren = new Object[SPAN];
+            System.arraycopy(tail.children, 0, newTailChildren, 0, newTailSize);
+            newList.tail = new Node(newTailChildren);
+            return newList;
+        }
+        
+        newList.root = forkPrefixRec(toIndex, newList, root, rootShift, true);
+        newList.size = toIndex;
+        newList.pullUpTail();
+        return newList;
+    }
     
-    // | 1   3.
-    // | 1 | 1 ( 1   1.)
-    // | 1 | 1 | 1 | 1.
-    //
-    // | 1   3.
-    // | 1 | 1   2.)
-    // | 1 | 1 | 1 1.
-    //
-    // | 1   3.
-    // | 1 | 3.
-    // | 1 | 1 1 1.
-    //
-    // | 1   3.)
-    // | 1 | 3.
-    // | 1 | 1 1 1.
-    //
-    // | 4.
-    // | 4.
-    // | 1 1 1 1.
+    private static <E> Node forkPrefixRec(int toIndex, TrieForkJoinList<E> newList, Node node, int shift, boolean isLeftmost) {
+        int childIdx = toIndex >>> shift;
+        if (shift == 0) {
+            // TODO: If not full, next level must be Sized
+            newList.rootShift = shift;
+            return node.copy(false, childIdx+1); // TODO: +1 ???
+        }
+        int childShift = shift - SHIFT;
+        if (node instanceof SizedParentNode sn) {
+            Sizes oldSizes = sn.sizes();
+            while (oldSizes.get(childIdx) <= toIndex) {
+                childIdx++;
+            }
+            if (childIdx != 0) {
+                Node rightNode = forkPrefixRec(toIndex - oldSizes.get(childIdx-1), newList, (Node) sn.children[childIdx], childShift, false);
+                ((ParentNode) node).disownPrefix(childIdx);
+                // TODO: Truncating-copy could make us not-Sized?
+                SizedParentNode newNode = sn.copy(false, childIdx+1);
+                newNode.sizes().set(childIdx, toIndex+1);
+                newNode.children[childIdx] = rightNode; // TODO: claim(childIdx)
+                newList.rootShift = shift;
+                return newNode;
+            }
+            Node rightNode = forkPrefixRec(toIndex, newList, (Node) sn.children[childIdx], childShift, isLeftmost);
+            if (isLeftmost) {
+                return rightNode;
+            }
+            newList.rootShift = shift;
+            int childSize = getSizeIfNotFull(rightNode, true, childShift); // TODO: Obviate. We already know what the size should be (toIndex+1).
+            if (childSize != -1) {
+                Sizes newSizes = Sizes.of(shift, 1);
+                newSizes.set(0, childSize);
+                return new SizedParentNode(new Object[]{ rightNode }, newSizes); // TODO: claim(0)
+            }
+            return new ParentNode(new Object[]{ rightNode }); // TODO: claim(0)
+        }
+        // Not Sized
+        int nextToIndex = toIndex - (childIdx << shift);
+        if (childIdx != 0) {
+            Node rightNode = forkPrefixRec(nextToIndex, newList, (Node) node.children[childIdx], childShift, false);
+            ((ParentNode) node).disownPrefix(childIdx);
+            // TODO: Not-full child could make us sized?
+            Node newNode = node.copy(false, childIdx+1);
+            newNode.children[childIdx] = rightNode; // TODO: claim(childIdx)
+            newList.rootShift = shift;
+            return newNode;
+        }
+        Node rightNode = forkPrefixRec(nextToIndex, newList, (Node) node.children[childIdx], childShift, isLeftmost);
+        if (isLeftmost) {
+            return rightNode;
+        }
+        newList.rootShift = shift;
+        // TODO: Not-full child could make us sized?
+        return new ParentNode(new Object[]{ rightNode }); // TODO: claim(0)
+    }
     
-    private ForkJoinList<E> fork(int fromIndex, int toIndex) {
-        throw new UnsupportedOperationException();
+    private TrieForkJoinList<E> forkSuffix(int fromIndex) {
+        if (fromIndex == 0) {
+            owns = 0;
+            return new TrieForkJoinList<>(this);
+        }
+        if (fromIndex == size) {
+            return new TrieForkJoinList<>();
+        }
+        
+        TrieForkJoinList<E> newList = new TrieForkJoinList<>();
+        int newSize = size - fromIndex;
+        if (newSize <= tailSize) {
+            newList.tailSize = newList.size = newSize;
+            newList.claimTail();
+            Object[] newTailChildren = new Object[SPAN];
+            System.arraycopy(tail.children, tailSize - newSize, newTailChildren, 0, newSize);
+            newList.tail = new Node(newTailChildren);
+            return newList;
+        }
+        
+        newList.root = forkSuffixRec(fromIndex, newList, root, rootShift, true);
+        newList.size = newSize;
+        disownTail();
+        newList.tail = tail;
+        newList.tailSize = tailSize;
+        return newList;
+        
+        // TODO: Handle non-full leaf root?
+    }
+    
+    private static <E> Node forkSuffixRec(int fromIndex, TrieForkJoinList<E> newList, Node node, int shift, boolean isRightmost) {
+        int childIdx = fromIndex >>> shift;
+        if (shift == 0) {
+            // TODO: If not full, next level must be Sized
+            newList.rootShift = shift;
+            return node.copy(false, childIdx, node.children.length);
+        }
+        int childShift = shift - SHIFT;
+        int nextFromIndex = fromIndex;
+        if (node instanceof SizedParentNode sn) {
+            Sizes oldSizes = sn.sizes();
+            while (oldSizes.get(childIdx) <= nextFromIndex) {
+                childIdx++;
+            }
+            if (childIdx != 0) {
+                nextFromIndex -= oldSizes.get(childIdx-1);
+            }
+        }
+        else {
+            nextFromIndex -= childShift << shift;
+        }
+        int lastIdx = node.children.length-1;
+        if (childIdx != lastIdx) {
+            Node leftNode = forkSuffixRec(nextFromIndex, newList, (Node) node.children[childIdx], childShift, false);
+            ((ParentNode) node).disownSuffix(childIdx+1);
+            ParentNode newNode = ((ParentNode) node).copy(false, childIdx, node.children.length);
+            newNode.children[0] = leftNode;
+            newNode.refreshSizesIfLeftmostChildChanged(isRightmost, shift); // TODO: Fix to tolerate shift == SHIFT
+            newList.rootShift = shift;
+            return newNode;
+        }
+        Node leftNode = forkSuffixRec(nextFromIndex, newList, (Node) node.children[childIdx], childShift, isRightmost);
+        if (isRightmost) {
+            return leftNode;
+        }
+        int childSize = getSizeIfNotFull(leftNode, false, childShift); // TODO: Do we already know what the size should be?
+        if (childSize != -1) {
+            Sizes newSizes = Sizes.of(shift, 1);
+            newSizes.set(0, childSize);
+            return new SizedParentNode(new Object[]{ leftNode }, newSizes); // TODO: claim(0)
+        }
+        return new ParentNode(new Object[]{ leftNode }); // TODO: claim(0)
+    }
+    
+    // !hasRight => isRightmost
+    // !hasLeft  => isLeftmost
+    
+    private TrieForkJoinList<E> fork(int fromIndex, int toIndex) {
+        // TODO: Optimize - do both at once, retain ownership where possible
+        // TODO: Check range
+        return forkPrefix(toIndex).forkSuffix(fromIndex);
+        
+        // When slicing (range-forking), we should be able to avoid invariant violations by rebalancing 'somehow',
+        // and then letting normal only-child-promotion eliminate redundant levels.
+        //
+        // What kind of rebalancing?
+        //  - If we are slicing right, then from the bottom-up, we'd look for the first slot that has a left sibling,
+        //    and concatenate the siblings
+        //  - If we are slicing left, then from the bottom-up, we'd look for the first slot that has a right sibling,
+        //    and concatenate the siblings
+        //  - TODO: Suppose this concatenation merges the root slots into one, and the merged slot still has a sibling
+        //     - Do we repeat the process with the next sibling? This would increase the big-O from O(m*log_m(N)) to O(m*log^2_m(N))
+        //  - What is the difference in resulting structure between slice-right and repeated removeLast()?
+        //    - It is possible that our structure is a skinny leg + a dense tree (eg due to concatenating a single-element-list
+        //      with a large dense list) - then repeated removeLast() will end up with a deep tree containing 2 leaves.
+        //    - NOTE: Because removeLast() operates on a tail, there is no temptation to rebalance
+        
+        // | 1   3.
+        // | 1 | 1 ( 1   1.)
+        // | 1 | 1 | 1 | 1.
+        //
+        // | 1   3.
+        // | 1 | 1   2.)
+        // | 1 | 1 | 1 1.
+        //
+        // | 1   3.
+        // | 1 | 3.
+        // | 1 | 1 1 1.
+        //
+        // | 1   3.)
+        // | 1 | 3.
+        // | 1 | 1 1 1.
+        //
+        // | 4.
+        // | 4.
+        // | 1 1 1 1.
     }
     
     // Pros with a draining join:
@@ -773,10 +959,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     private static final ParentNode EMPTY_NODE = new ParentNode(new Object[0]);
     
     private static void concatSubTree(ConcatState state, int leftShift, int rightShift, boolean isRightmost) {
-        // At the end of rebalance(), we call some flavor of "refreshSizes" on left/right, which will ensure left/right
-        // are sized if any children are not full. So when we return from rebalance() / concatSubTree(), and need to
-        // check the size of state.left/right, we can set lastChildMayBeNotFull = false.
-        
         // TODO: Avoid editable if no rebalancing needed?
         Node left = state.left, right = state.right;
         if (leftShift > rightShift) {
@@ -1244,6 +1426,14 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             }
         }
         
+        void disownPrefix(int to) {
+            owns &= ~mask(to);
+        }
+        
+        void disownSuffix(int from) {
+            owns &= mask(from);
+        }
+        
         static short skipOwnership(short owns, int skip, int keep) {
             return (short) ((owns >>> skip) & mask(keep));
         }
@@ -1488,7 +1678,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 // we can empty it (and removing the empty child is handled elsewhere).
                 return this;
             }
-            
             Object[] oldChildren = children;
             int len = oldChildren.length;
             int childSize = getSizeIfNotFull((Node) oldChildren[0], isRightmost && len == 1, shift - SHIFT);
