@@ -589,62 +589,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         return newList;
     }
     
-    private static <E> Node forkPrefixRec(int toIndex, TrieForkJoinList<E> newList, Node node, int shift, boolean isLeftmost) {
-        int childIdx = toIndex >>> shift;
-        if (shift == 0) {
-            // TODO: If not full, next level must be Sized
-            newList.rootShift = shift;
-            return node.copy(false, childIdx+1); // TODO: +1 ???
-        }
-        int childShift = shift - SHIFT;
-        if (node instanceof SizedParentNode sn) {
-            Sizes oldSizes = sn.sizes();
-            while (oldSizes.get(childIdx) <= toIndex) {
-                childIdx++;
-            }
-            if (childIdx != 0) {
-                Node rightNode = forkPrefixRec(toIndex - oldSizes.get(childIdx-1), newList, (Node) sn.children[childIdx], childShift, false);
-                ((ParentNode) node).disownPrefix(childIdx);
-                // TODO: Truncating-copy could make us not-Sized?
-                SizedParentNode newNode = sn.copy(false, childIdx+1);
-                newNode.sizes().set(childIdx, toIndex+1);
-                newNode.children[childIdx] = rightNode; // TODO: claim(childIdx)
-                newList.rootShift = shift;
-                return newNode;
-            }
-            Node rightNode = forkPrefixRec(toIndex, newList, (Node) sn.children[childIdx], childShift, isLeftmost);
-            if (isLeftmost) {
-                return rightNode;
-            }
-            newList.rootShift = shift;
-            int childSize = getSizeIfNotFull(rightNode, true, childShift); // TODO: Obviate. We already know what the size should be (toIndex+1).
-            if (childSize != -1) {
-                Sizes newSizes = Sizes.of(shift, 1);
-                newSizes.set(0, childSize);
-                return new SizedParentNode(new Object[]{ rightNode }, newSizes); // TODO: claim(0)
-            }
-            return new ParentNode(new Object[]{ rightNode }); // TODO: claim(0)
-        }
-        // Not Sized
-        int nextToIndex = toIndex - (childIdx << shift);
-        if (childIdx != 0) {
-            Node rightNode = forkPrefixRec(nextToIndex, newList, (Node) node.children[childIdx], childShift, false);
-            ((ParentNode) node).disownPrefix(childIdx);
-            // TODO: Not-full child could make us sized?
-            Node newNode = node.copy(false, childIdx+1);
-            newNode.children[childIdx] = rightNode; // TODO: claim(childIdx)
-            newList.rootShift = shift;
-            return newNode;
-        }
-        Node rightNode = forkPrefixRec(nextToIndex, newList, (Node) node.children[childIdx], childShift, isLeftmost);
-        if (isLeftmost) {
-            return rightNode;
-        }
-        newList.rootShift = shift;
-        // TODO: Not-full child could make us sized?
-        return new ParentNode(new Object[]{ rightNode }); // TODO: claim(0)
-    }
-    
     private TrieForkJoinList<E> forkSuffix(int fromIndex) {
         if (fromIndex == 0) {
             owns = 0;
@@ -675,6 +619,62 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         // TODO: Handle non-full leaf root?
     }
     
+    // TODO: Figure out not-full not-Sized leaf/root
+    // TODO: Reuse existing nodes if taking all with no altered children
+    
+    private static <E> Node forkPrefixRec(int toIndex, TrieForkJoinList<E> newList, Node node, int shift, boolean isLeftmost) {
+        int childIdx = toIndex >>> shift;
+        if (shift == 0) {
+            // TODO: If not full, next level must be Sized
+            newList.rootShift = shift;
+            return node.copy(false, childIdx+1); // TODO: +1 ???
+        }
+        int childShift = shift - SHIFT;
+        int nextToIndex = toIndex;
+        if (node instanceof SizedParentNode sn) {
+            Sizes oldSizes = sn.sizes();
+            while (oldSizes.get(childIdx) <= toIndex) {
+                childIdx++;
+            }
+            if (childIdx != 0) {
+                nextToIndex -= oldSizes.get(childIdx-1);
+            }
+        }
+        else {
+            nextToIndex -= childIdx << shift;
+        }
+        ParentNode pn = (ParentNode) node, newNode;
+        if (childIdx != 0) {
+            Node rightNode = forkPrefixRec(nextToIndex, newList, (Node) pn.children[childIdx], childShift, false);
+            
+            // TODO: Truncating-copy could make us not-Sized? Ideally merge copy + update child
+            (newNode = pn.copyPrefix(false, childIdx+1, rightNode, true, shift)).claim(childIdx); // TODO: Integrate claim
+//            (newNode = pn.copy(false, childIdx+1)).claim(childIdx);
+//            newNode.children[childIdx] = rightNode;
+//            newNode.refreshSizesIfRightmostChildChanged(true, shift); // TODO: Fix to tolerate shift == SHIFT
+//            pn.disownPrefix(childIdx);
+            
+            newList.rootShift = shift;
+            return newNode;
+        }
+        Node rightNode = forkPrefixRec(nextToIndex, newList, (Node) pn.children[childIdx], childShift, isLeftmost);
+        if (isLeftmost) {
+            return rightNode;
+        }
+        Object[] newChildren = new Object[]{ rightNode };
+        int childSize = getSizeIfNotFull(rightNode, true, childShift); // TODO: Obviate. We already know what the size should be (toIndex+1).
+        if (childSize != -1) {
+            Sizes newSizes = Sizes.of(shift, 1);
+            newSizes.set(0, childSize);
+            (newNode = new SizedParentNode(newChildren, newSizes)).claim(0);
+        }
+        else {
+            (newNode = new ParentNode(newChildren)).claim(0);
+        }
+        newList.rootShift = shift;
+        return newNode;
+    }
+    
     private static <E> Node forkSuffixRec(int fromIndex, TrieForkJoinList<E> newList, Node node, int shift, boolean isRightmost) {
         int childIdx = fromIndex >>> shift;
         if (shift == 0) {
@@ -694,33 +694,39 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             }
         }
         else {
-            nextFromIndex -= childShift << shift;
+            nextFromIndex -= childIdx << shift;
         }
-        int lastIdx = node.children.length-1;
+        ParentNode pn = (ParentNode) node, newNode;
+        int lastIdx = pn.children.length-1;
         if (childIdx != lastIdx) {
-            Node leftNode = forkSuffixRec(nextFromIndex, newList, (Node) node.children[childIdx], childShift, false);
-            ((ParentNode) node).disownSuffix(childIdx+1);
-            ParentNode newNode = ((ParentNode) node).copy(false, childIdx, node.children.length);
-            newNode.children[0] = leftNode;
-            newNode.refreshSizesIfLeftmostChildChanged(isRightmost, shift); // TODO: Fix to tolerate shift == SHIFT
+            Node leftNode = forkSuffixRec(nextFromIndex, newList, (Node) pn.children[childIdx], childShift, false);
+            
+            // TODO: Truncating-copy could make us not-Sized? Ideally merge copy + update child
+            (newNode = pn.copySuffix(false, childIdx, leftNode, isRightmost, shift)).claim(0); // TODO: Integrate claim
+//            newNode.children[0] = leftNode;
+//            newNode.refreshSizesIfLeftmostChildChanged(isRightmost, shift); // TODO: Fix to tolerate shift == SHIFT
+//            pn.disownSuffix(childIdx+1);
+            
             newList.rootShift = shift;
             return newNode;
         }
-        Node leftNode = forkSuffixRec(nextFromIndex, newList, (Node) node.children[childIdx], childShift, isRightmost);
+        Node leftNode = forkSuffixRec(nextFromIndex, newList, (Node) pn.children[childIdx], childShift, isRightmost);
         if (isRightmost) {
             return leftNode;
         }
+        Object[] newChildren = new Object[]{ leftNode };
         int childSize = getSizeIfNotFull(leftNode, false, childShift); // TODO: Do we already know what the size should be?
         if (childSize != -1) {
             Sizes newSizes = Sizes.of(shift, 1);
             newSizes.set(0, childSize);
-            return new SizedParentNode(new Object[]{ leftNode }, newSizes); // TODO: claim(0)
+            (newNode = new SizedParentNode(newChildren, newSizes)).claim(0);
         }
-        return new ParentNode(new Object[]{ leftNode }); // TODO: claim(0)
+        else {
+            (newNode = new ParentNode(newChildren)).claim(0);
+        }
+        newList.rootShift = shift;
+        return newNode;
     }
-    
-    // !hasRight => isRightmost
-    // !hasLeft  => isLeftmost
     
     private TrieForkJoinList<E> fork(int fromIndex, int toIndex) {
         // TODO: Optimize - do both at once, retain ownership where possible
@@ -801,6 +807,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     //  - IDEA: Use a separate checksum to tell iterators to re-sync their stack on checksum mismatch
     //    - Only need to increment checksum if we changed some ownership during set() (unowned -> owned)
     //      or fork() (owned -> unowned, maybe only subList.fork() since list.fork() is a faster root-sync)
+    //    - Unfortunately, unlike modCount which makes co-mods typically fail, this would make co-mods typically
+    //      succeed, which would create a false sense of security.
     
     // if other is a known implementation: fork() it to ensure no unsafe sharing or mutation
     //  - this also protects the list when joining itself, or a sublist
@@ -936,7 +944,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         if (node instanceof SizedParentNode sn) {
             return sn.sizes().get(sn.children.length-1);
         }
-        if (isRightmost) {
+        if (isRightmost) { // TODO: && shift != 0 ??
             return -1;
         }
         int len = node.children.length;
@@ -1500,6 +1508,14 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             return copySized(isOwned, shift);
         }
         
+        ParentNode copyPrefix(boolean isOwned, int toIndex, Node lastChild, boolean isRightmost, int shift) {
+            throw new UnsupportedOperationException(); // TODO
+        }
+        
+        ParentNode copySuffix(boolean isOwned, int fromIndex, Node firstChild, boolean isRightmost, int shift) {
+            throw new UnsupportedOperationException(); // TODO
+        }
+        
         @Override
         ParentNode copy(boolean isOwned, int skip, int keep, int take, Node from,
                         boolean isFromOwned, boolean isRightmost, int shift) {
@@ -1779,6 +1795,16 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         @Override
         SizedParentNode copySized(boolean isOwned, int len, int shift) {
             return copy(isOwned, len);
+        }
+        
+        @Override
+        ParentNode copyPrefix(boolean isOwned, int toIndex, Node lastChild, boolean isRightmost, int shift) {
+            throw new UnsupportedOperationException(); // TODO
+        }
+        
+        @Override
+        ParentNode copySuffix(boolean isOwned, int fromIndex, Node firstChild, boolean isRightmost, int shift) {
+            throw new UnsupportedOperationException(); // TODO
         }
         
         @Override
