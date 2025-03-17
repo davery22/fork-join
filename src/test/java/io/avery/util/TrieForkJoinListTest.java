@@ -6,9 +6,10 @@ import org.junit.jupiter.params.provider.MethodSource;
 
 import java.util.*;
 import java.util.function.Function;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.params.provider.Arguments.argumentSet;
 
 class TrieForkJoinListTest {
@@ -25,12 +26,17 @@ class TrieForkJoinListTest {
     }
     
     static Stream<ArgumentSet> provideCreators() {
-        return Stream.of(
+        return Stream.concat(
+        Stream.of(
             argumentSet("join1", id(TrieForkJoinListTest::join1)),
             argumentSet("join2", id(TrieForkJoinListTest::join2)),
             argumentSet("join3", id(TrieForkJoinListTest::join3)),
             argumentSet("join4", id(TrieForkJoinListTest::join4)),
-            argumentSet("join5", id(TrieForkJoinListTest::join5))
+            argumentSet("join5", id(TrieForkJoinListTest::join5)),
+            argumentSet("subListFork1", id(TrieForkJoinListTest::subListFork1))
+        ),
+        IntStream.rangeClosed(1, 100)
+            .mapToObj(i -> argumentSet("fuzz" + i, id(factory -> fuzz(i, factory))))
         );
     }
     
@@ -71,7 +77,6 @@ class TrieForkJoinListTest {
             right.add(i);
         }
         left.join(right);
-        left.toString();
         return left;
     }
     
@@ -108,6 +113,37 @@ class TrieForkJoinListTest {
         for (int i = 0; i < SPAN*SPAN; i++) {
             result.join(left);
             result.join(right);
+        }
+        return result;
+    }
+    
+    static ForkJoinList<Integer> subListFork1(Factory factory) {
+        ForkJoinList<Integer> list = factory.get();
+        for (int i = 0; i < 10000; i++) {
+            list.add(i);
+        }
+        return list.subList(100, 9900).fork();
+    }
+    
+    static ForkJoinList<Integer> fuzz(int seed, Factory factory) {
+        Random random = new Random(seed);
+        ForkJoinList<Integer> list = factory.get();
+        int len = random.nextInt(5, 8675309);
+        for (int i = 0; i < len; i++) {
+            list.add(i);
+        }
+        int splits = random.nextInt(1, 100);
+        ForkJoinList<Integer> result = null;
+        for (int i = 0; i < splits; i++) {
+            int end = random.nextInt(0, len+1);
+            int start = random.nextInt(0, end+1);
+            var sublist = list.subList(start, end).fork();
+            if (result == null) {
+                result = sublist;
+            }
+            else {
+                result.join(sublist);
+            }
         }
         return result;
     }
