@@ -263,12 +263,31 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     public void add(int index, E element) {
         rangeCheckForAdd(index);
         modCount++;
+        int tailOffset = tailOffset();
         
-        if (index == size-1) {
-            addToTail(element);
+        if (index >= tailOffset) {
+            if (index == size) {
+                addToTail(element);
+                return;
+            }
+            int tailIdx = index - tailOffset;
+            Node oldTail = getEditableTail();
+            if (tailSize < SPAN) {
+                System.arraycopy(oldTail.children, tailIdx, oldTail.children, tailIdx+1, tailSize-tailIdx);
+                oldTail.children[tailIdx] = element;
+                tailSize++;
+                size++;
+            }
+            else {
+                Object lastElement = oldTail.children[SPAN-1];
+                System.arraycopy(oldTail.children, tailIdx, oldTail.children, tailIdx+1, SPAN-tailIdx-1);
+                oldTail.children[tailIdx] = element;
+                addToTail(lastElement); // TODO: Rechecks tailSize < SPAN
+            }
         }
         else {
-            throw new UnsupportedOperationException(); // TODO
+            // TODO: Add to root
+            throw new UnsupportedOperationException();
         }
     }
     
@@ -283,12 +302,26 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     public E remove(int index) {
         Objects.checkIndex(index, size);
         modCount++;
+        int tailOffset = tailOffset();
         
-        if (index == size-1) {
-            return popFromTail();
+        if (index >= tailOffset) {
+            if (index == size-1) {
+                return popFromTail();
+            }
+            // We know that we are in the tail, but not in the last position.
+            // So tailSize must be >= 2, and we will not need to promote a new tail.
+            int tailIdx = index - tailOffset;
+            Node oldTail = getEditableTail();
+            @SuppressWarnings("unchecked")
+            E old = (E) oldTail.children[tailIdx];
+            System.arraycopy(oldTail.children, tailIdx+1, oldTail.children, tailIdx, tailSize-tailIdx-1);
+            tailSize--;
+            size--;
+            return old;
         }
         else {
-            throw new UnsupportedOperationException(); // TODO
+            // TODO: Remove from root
+            throw new UnsupportedOperationException();
         }
     }
     
@@ -410,7 +443,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
     }
     
-    private void addToTail(E e) {
+    private void addToTail(Object e) {
         if (tailSize < SPAN) {
             // Could check for INITIAL_TAIL here to skip copying, but that slows down the common case
             getEditableTail().children[tailSize++] = e;
