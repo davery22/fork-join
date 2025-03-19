@@ -577,28 +577,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         return size;
     }
     
-    // fork(from, to) would unify /forkSuffix(from) and forkPrefix(to)\, splitting when they diverge
-    // removeRange(from, to) would unify \forkPrefix(to) and forkSuffix(from)/, joining the sides together
-    
-    @Override
-    protected void removeRange(int fromIndex, int toIndex) {
-        // TODO: Optimize - do removeRange() directly and in-place
-        TrieForkJoinList<E> left = forkPrefix(fromIndex);
-        TrieForkJoinList<E> right = forkSuffix(toIndex);
-        left.join(right);
-        size = left.size;
-        tailSize = left.tailSize;
-        rootShift = left.rootShift;
-        root = left.root;
-        tail = left.tail;
-        owns = left.owns;
-        
-        // removeRange(0, toIndex) degrades to forkSuffix(toIndex) (but retaining ownership)
-        // removeRange(fromIndex, size) degrades to forkPrefix(fromIndex) (but retaining ownership)
-        //
-        // These suggest that maintaining balance would cost O(m*log^2_m(N))
-    }
-    
     @Override
     public ForkJoinList<E> fork() {
         // Disown root/tail, to force path-copying upon future mutations
@@ -606,7 +584,267 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         return new TrieForkJoinList<>(this);
     }
     
-    // TODO: Top-level forkPrefix/Suffix do not support retaining ownership
+    @Override
+    protected void removeRange(int fromIndex, int toIndex) {
+        // In-place dual of forkRange()
+        
+        // TODO: Handle non-full leaf root before returning?
+        
+        if (fromIndex == 0) {
+            removePrefix(toIndex);
+            return;
+        }
+        if (toIndex == size) {
+            removeSuffix(fromIndex);
+            return;
+        }
+        
+        int tailOffset = tailOffset(), rangeSize = toIndex - fromIndex;
+        size -= rangeSize;
+        if (toIndex >= tailOffset) {
+            if (fromIndex >= tailOffset) {
+                // Starts and ends in the tail
+                Node newTail = getEditableTail();
+                int oldTailSize = tailSize, tailIdx = toIndex - tailOffset;
+                int newTailSize = tailSize = oldTailSize - rangeSize;
+                System.arraycopy(newTail.children, tailIdx, newTail.children, fromIndex - tailOffset, oldTailSize - tailIdx);
+                Arrays.fill(newTail.children, newTailSize, oldTailSize, null);
+                return;
+            }
+            
+            root = forkPrefixRec(fromIndex, this, getEditableRoot(), rootShift, true, true);
+            if (toIndex != tailOffset) {
+                // Starts in the root, ends in the tail
+                Node newTail = getEditableTail();
+                int oldTailSize = tailSize, tailIdx = toIndex - tailOffset;
+                int newTailSize = tailSize = oldTailSize - tailIdx;
+                System.arraycopy(newTail.children, tailIdx, newTail.children, 0, newTailSize);
+                Arrays.fill(newTail.children, newTailSize, oldTailSize, null);
+            }
+            return;
+        }
+        
+        // Starts and ends in the root
+        root = removeRangeRec(fromIndex, toIndex-1, getEditableRoot(), true, rootShift);
+    }
+    
+    private void removeSuffix(int fromIndex) {
+        // In-place version of forkPrefix()
+        
+        if (fromIndex == 0) {
+            clear();
+            return;
+        }
+        if (fromIndex == size) {
+            return;
+        }
+        
+        int tailOffset = tailOffset();
+        size = fromIndex;
+        if (fromIndex >= tailOffset) {
+            if (fromIndex == tailOffset) {
+                pullUpTail();
+                return;
+            }
+            int oldTailSize = tailSize;
+            int newTailSize = tailSize = fromIndex - tailOffset;
+            Node newTail = getEditableTail();
+            Arrays.fill(newTail.children, newTailSize, oldTailSize, null);
+            return;
+        }
+        
+        root = forkPrefixRec(fromIndex-1, this, getEditableRoot(), rootShift, true, true);
+        pullUpTail();
+    }
+    
+    private void removePrefix(int toIndex) {
+        // In-place version of forkSuffix()
+        
+        if (toIndex == 0) {
+            return;
+        }
+        if (toIndex == size) {
+            clear();
+            return;
+        }
+        
+        int newSize = size -= toIndex;
+        if (newSize <= tailSize) {
+            int oldTailSize = tailSize;
+            tailSize = newSize;
+            Node newTail = getEditableTail();
+            System.arraycopy(newTail.children, oldTailSize - newSize, newTail.children, 0, newSize);
+            Arrays.fill(newTail.children, newSize, oldTailSize, null);
+            return;
+        }
+        
+        root = forkSuffixRec(toIndex, this, getEditableRoot(), rootShift, true, true);
+    }
+    
+    private Node removeRangeRec(int fromIndex, int toIndex, Node node, boolean isRightmost, int shift) {
+        int fromChildIdx = (fromIndex >>> shift) & MASK;
+        int toChildIdx = (toIndex >>> shift) & MASK;
+        if (shift == 0) {
+            return node.removeRange(true, fromChildIdx, toChildIdx+1);
+        }
+        if (node instanceof SizedParentNode sn) {
+            Sizes oldSizes = sn.sizes();
+            while (oldSizes.get(fromChildIdx) <= fromIndex) {
+                fromChildIdx++;
+            }
+            if (fromChildIdx > toChildIdx) {
+                toChildIdx = fromChildIdx;
+            }
+            while (oldSizes.get(toChildIdx) <= toIndex) {
+                toChildIdx++;
+            }
+            if (fromChildIdx != 0) {
+                fromIndex -= oldSizes.get(fromChildIdx-1);
+                toIndex -= oldSizes.get(toChildIdx-1);
+            }
+            else if (toChildIdx != 0) {
+                toIndex -= oldSizes.get(toChildIdx-1);
+            }
+        }
+        ParentNode parent = (ParentNode) node;
+        int childShift = shift - SHIFT, len = node.children.length;
+        boolean isChildRightmost = isRightmost && toChildIdx == len-1;
+        if (fromChildIdx == toChildIdx) {
+            Node child = node.getEditableChild(fromChildIdx);
+            int oldChildLen = child.children.length;
+            parent.children[fromChildIdx] = child = removeRangeRec(fromIndex, toIndex, child, isChildRightmost, childShift);
+            if (child == EMPTY_NODE) {
+                if (len == 1) {
+                    // Only-child - Parent becomes empty
+                    return EMPTY_NODE;
+                }
+                // Shift to remove, refresh sizes
+                // Removing a child cannot increase parent's excess, so no rebalancing needed
+                // TODO: Implement a faster shift + refresh for the special case of one child removed
+                parent.shiftChildren(1L << fromChildIdx, 0, 0, null, 0);
+                return parent.refreshSizes(isRightmost, shift);
+            }
+            if (child.children.length != oldChildLen) {
+                // Grandchildren count changed - May need to rebalance
+                return rebalance1(parent, shift, isRightmost);
+            }
+            return parent;
+        }
+        Node[] children = new Node[]{ node.getEditableChild(fromChildIdx), node.getEditableChild(toChildIdx) };
+        removeRangeRec2(fromIndex, toIndex, children, isChildRightmost, childShift);
+        
+        node.children[fromChildIdx] = children[0];
+        node.children[toChildIdx] = children[1];
+        return rebalance12(parent, fromChildIdx, toChildIdx, shift, isRightmost);
+    }
+    
+    private void removeRangeRec2(int fromIndex, int toIndex, Node[] children, boolean isRightmost, int shift) {
+        Node left = children[0], right = children[1];
+        int fromChildIdx = (fromIndex >>> shift) & MASK;
+        int toChildIdx = (toIndex >>> shift) & MASK;
+        if (shift == 0) {
+            int remainingRight = right.children.length - toChildIdx - 1;
+            int totalSize = fromChildIdx + remainingRight;
+            if (totalSize <= SPAN) {
+                // Empty right into left if possible
+                if (totalSize == 0) {
+                    children[0] = EMPTY_NODE;
+                }
+                else {
+                    // TODO: Actually doing extra work to shift left's children right, just so we can reuse an existing copy method.
+                    int skip = left.children.length - fromChildIdx;
+                    System.arraycopy(left.children, 0, left.children, skip, fromChildIdx);
+                    left.copy(true, skip, fromChildIdx, remainingRight, right, true, true, 0);
+                }
+                children[1] = EMPTY_NODE;
+            }
+            else { // totalSize > SPAN. Since both parts are < SPAN, both must be non-zero, so no empty nodes
+                left.copy(true, fromChildIdx);
+                right.copySuffix(true, toChildIdx + 1);
+            }
+            return;
+        }
+        if (left instanceof SizedParentNode sn) {
+            Sizes oldSizes = sn.sizes();
+            while (oldSizes.get(fromChildIdx) <= fromIndex) {
+                fromChildIdx++;
+            }
+            if (fromChildIdx != 0) {
+                fromIndex -= oldSizes.get(fromChildIdx-1);
+            }
+        }
+        if (right instanceof SizedParentNode sn) {
+            Sizes oldSizes = sn.sizes();
+            while (oldSizes.get(toChildIdx) <= toChildIdx) {
+                toChildIdx++;
+            }
+            if (toChildIdx != 0) {
+                toIndex -= oldSizes.get(toChildIdx-1);
+            }
+        }
+        boolean isChildRightmost = isRightmost && toChildIdx == right.children.length-1;
+        int childShift = shift - SHIFT;
+        children[0] = left.getEditableChild(fromChildIdx);
+        children[1] = right.getEditableChild(toChildIdx);
+        removeRangeRec2(fromIndex, toIndex, children, isChildRightmost, childShift);
+        
+        left.children[fromChildIdx] = children[0];
+        right.children[toChildIdx] = children[1];
+        children[0] = left;
+        children[1] = right;
+        rebalance22(children, fromChildIdx, toChildIdx, shift, isRightmost);
+        // TODO: Children may be empty (which will at least force a shift, or may empty us)
+        //  Or maybe their children counts changed, prompting us to rebalance
+        // TODO: Remove suffix/prefix, refresh rightmost/leftmost child, empty right into left if possible
+        // TODO: Restore initial left/right
+    }
+    
+    private TrieForkJoinList<E> forkRange(int fromIndex, int toIndex) {
+        
+        // TODO: Handle non-full leaf root before returning?
+        
+        if (fromIndex == 0) {
+            return forkPrefix(toIndex);
+        }
+        if (toIndex == size) {
+            return forkSuffix(fromIndex);
+        }
+        
+        TrieForkJoinList<E> newList = new TrieForkJoinList<>();
+        int newSize = newList.size = toIndex - fromIndex;
+        int tailOffset = tailOffset();
+        if (toIndex >= tailOffset) {
+            if (fromIndex >= tailOffset) {
+                // Starts and ends in the tail
+                newList.claimTail();
+                Object[] newTailChildren = new Object[SPAN];
+                System.arraycopy(tail.children, fromIndex - tailOffset, newTailChildren, 0, newSize);
+                newList.tail = new Node(newTailChildren);
+                newList.tailSize = newSize;
+                return newList;
+            }
+            
+            newList.root = forkSuffixRec(fromIndex, newList, root, rootShift, true, false);
+            if (toIndex == tailOffset) {
+                // Starts in the root, ends at the tail
+                newList.pullUpTail();
+            }
+            else {
+                // Starts in the root, ends in the tail
+                int newTailSize = newList.tailSize = toIndex - tailOffset;
+                newList.claimTail();
+                Object[] newTailChildren = new Object[SPAN];
+                System.arraycopy(tail.children, 0, newTailChildren, 0, newTailSize);
+                newList.tail = new Node(newTailChildren);
+            }
+            return newList;
+        }
+        
+        // Starts and ends in the root
+        newList.root = forkRangeRec(fromIndex, toIndex-1, newList, root, rootShift);
+        newList.pullUpTail();
+        return newList;
+    }
     
     private TrieForkJoinList<E> forkPrefix(int toIndex) {
         if (toIndex == 0) {
@@ -619,22 +857,24 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         
         TrieForkJoinList<E> newList = new TrieForkJoinList<>();
         int tailOffset = tailOffset();
-        if (toIndex > tailOffset) {
-            int newTailSize = newList.tailSize = (newList.size = toIndex) - tailOffset;
-            newList.rootShift = rootShift;
+        newList.size = toIndex;
+        if (toIndex >= tailOffset) {
             disownRoot();
+            newList.rootShift = rootShift;
             newList.root = root;
+            if (toIndex == tailOffset) {
+                newList.pullUpTail();
+                return newList;
+            }
+            int newTailSize = newList.tailSize = toIndex - tailOffset;
             newList.claimTail();
-            // Would use tail.copy(false, newTailSize), but we want capacity == SPAN
             Object[] newTailChildren = new Object[SPAN];
             System.arraycopy(tail.children, 0, newTailChildren, 0, newTailSize);
             newList.tail = new Node(newTailChildren);
             return newList;
         }
-        // TODO: if (toIndex == tailOffset) share root
         
-        newList.root = forkPrefixRec(toIndex-1, newList, root, rootShift, true);
-        newList.size = toIndex;
+        newList.root = forkPrefixRec(toIndex-1, newList, root, rootShift, true, false);
         newList.pullUpTail();
         return newList;
     }
@@ -649,9 +889,9 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         
         TrieForkJoinList<E> newList = new TrieForkJoinList<>();
-        int newSize = size - fromIndex;
+        int newSize = newList.size = size - fromIndex;
         if (newSize <= tailSize) {
-            newList.tailSize = newList.size = newSize;
+            newList.tailSize = newSize;
             newList.claimTail();
             Object[] newTailChildren = new Object[SPAN];
             System.arraycopy(tail.children, tailSize - newSize, newTailChildren, 0, newSize);
@@ -659,60 +899,18 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             return newList;
         }
         
-        newList.root = forkSuffixRec(fromIndex, newList, root, rootShift, true);
-        newList.size = newSize;
         disownTail();
-        newList.tail = tail;
         newList.tailSize = tailSize;
-        return newList;
-        
-        // TODO: Handle non-full leaf root?
-    }
-    
-    private TrieForkJoinList<E> forkRange(int fromIndex, int toIndex) {
-        if (fromIndex == 0) {
-            return forkPrefix(toIndex);
-        }
-        if (toIndex == size) {
-            return forkSuffix(fromIndex);
-        }
-        
-        TrieForkJoinList<E> newList = new TrieForkJoinList<>();
-        int newSize = toIndex - fromIndex;
-        int tailOffset = tailOffset();
-        if (toIndex > tailOffset) {
-            if (fromIndex >= tailOffset) {
-                // Starts and ends in the tail
-                newList.tailSize = newList.size = newSize;
-                newList.claimTail();
-                Object[] newTailChildren = new Object[SPAN];
-                System.arraycopy(tail.children, fromIndex - tailOffset, newTailChildren, 0, newSize);
-                newList.tail = new Node(newTailChildren);
-                return newList;
-            }
-            
-            // Starts in the root, ends in the tail
-            int newTailSize = newList.tailSize = toIndex - tailOffset;
-            newList.claimTail();
-            Object[] newTailChildren = new Object[SPAN];
-            System.arraycopy(tail.children, 0, newTailChildren, 0, newTailSize);
-            newList.tail = new Node(newTailChildren);
-            newList.root = forkSuffixRec(fromIndex, newList, root, rootShift, true);
-            newList.size = newSize;
-        }
-        
-        // Starts and ends in the root
-        newList.root = forkRangeRec(fromIndex, toIndex-1, newList, root, rootShift);
-        newList.size = newSize;
-        newList.pullUpTail();
+        newList.tail = tail;
+        newList.root = forkSuffixRec(fromIndex, newList, root, rootShift, true, false);
         return newList;
     }
     
-    private static <E> Node forkPrefixRec(int toIndex, TrieForkJoinList<E> newList, Node node, int shift, boolean isLeftmost) {
+    private static <E> Node forkPrefixRec(int toIndex, TrieForkJoinList<E> newList, Node node, int shift, boolean isLeftmost, boolean isOwned) {
         int childIdx = (toIndex >>> shift) & MASK;
         if (shift == 0) {
             newList.rootShift = shift;
-            return node.copy(false, childIdx+1);
+            return node.copy(isOwned, childIdx+1);
         }
         if (node instanceof SizedParentNode sn) {
             Sizes oldSizes = sn.sizes();
@@ -724,19 +922,20 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             }
         }
         boolean isChildLeftmost = isLeftmost && childIdx == 0;
-        Node rightNode = forkPrefixRec(toIndex, newList, (Node) node.children[childIdx], shift - SHIFT, isChildLeftmost);
+        Node rightNode = isOwned ? node.getEditableChild(childIdx) : (Node) node.children[childIdx];
+        rightNode = forkPrefixRec(toIndex, newList, rightNode, shift - SHIFT, isChildLeftmost, isOwned);
         if (isChildLeftmost) {
             return rightNode;
         }
         newList.rootShift = shift;
-        return ((ParentNode) node).copyPrefix(false, childIdx, rightNode, shift);
+        return ((ParentNode) node).copyPrefix(isOwned, childIdx, rightNode, shift);
     }
     
-    private static <E> Node forkSuffixRec(int fromIndex, TrieForkJoinList<E> newList, Node node, int shift, boolean isRightmost) {
+    private static <E> Node forkSuffixRec(int fromIndex, TrieForkJoinList<E> newList, Node node, int shift, boolean isRightmost, boolean isOwned) {
         int childIdx = (fromIndex >>> shift) & MASK;
         if (shift == 0) {
             newList.rootShift = shift;
-            return node.copySuffix(false, childIdx);
+            return node.copySuffix(isOwned, childIdx);
         }
         if (node instanceof SizedParentNode sn) {
             Sizes oldSizes = sn.sizes();
@@ -748,12 +947,13 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             }
         }
         boolean isChildRightmost = isRightmost && childIdx == node.children.length-1;
-        Node leftNode = forkSuffixRec(fromIndex, newList, (Node) node.children[childIdx], shift - SHIFT, isChildRightmost);
+        Node leftNode = isOwned ? node.getEditableChild(childIdx) : (Node) node.children[childIdx];
+        leftNode = forkSuffixRec(fromIndex, newList, leftNode, shift - SHIFT, isChildRightmost, isOwned);
         if (isChildRightmost) {
             return leftNode;
         }
         newList.rootShift = shift;
-        return ((ParentNode) node).copySuffix(false, childIdx, leftNode, isRightmost, shift);
+        return ((ParentNode) node).copySuffix(isOwned, childIdx, leftNode, isRightmost, shift);
     }
     
     private static <E> Node forkRangeRec(int fromIndex, int toIndex, TrieForkJoinList<E> newList, Node node, int shift) {
@@ -786,74 +986,10 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         if (fromChildIdx == toChildIdx) {
             return forkRangeRec(fromIndex, toIndex, newList, (Node) node.children[fromChildIdx], childShift);
         }
-        Node leftNode = forkSuffixRec(fromIndex, newList, (Node) node.children[fromChildIdx], childShift, false);
-        Node rightNode = forkPrefixRec(toIndex, newList, (Node) node.children[toChildIdx], childShift, false);
+        Node leftNode = forkSuffixRec(fromIndex, newList, (Node) node.children[fromChildIdx], childShift, false, false);
+        Node rightNode = forkPrefixRec(toIndex, newList, (Node) node.children[toChildIdx], childShift, false, false);
         newList.rootShift = shift;
         return ((ParentNode) node).copyRange(false, fromChildIdx, leftNode, toChildIdx, rightNode, shift);
-    }
-    
-    private TrieForkJoinList<E> fork(int fromIndex, int toIndex) {
-        // TODO: Check range
-        return forkRange(fromIndex, toIndex);
-//        return forkPrefix(toIndex).forkSuffix(fromIndex);
-        
-        // When slicing (range-forking), we should be able to avoid invariant violations by rebalancing 'somehow',
-        // and then letting normal only-child-promotion eliminate redundant levels.
-        //
-        // What kind of rebalancing?
-        //  - If we are slicing right, then from the bottom-up, we'd look for the first slot that has a left sibling,
-        //    and concatenate the siblings
-        //  - If we are slicing left, then from the bottom-up, we'd look for the first slot that has a right sibling,
-        //    and concatenate the siblings
-        //  - TODO: Suppose this concatenation merges the root slots into one, and the merged slot still has a sibling
-        //     - Do we repeat the process with the next sibling? This would increase the big-O from O(m*log_m(N)) to O(m*log^2_m(N))
-        //  - What is the difference in resulting structure between slice-right and repeated removeLast()?
-        //    - It is possible that our structure is a skinny leg + a dense tree (eg due to concatenating a single-element-list
-        //      with a large dense list) - then repeated removeLast() will end up with a deep tree containing 2 leaves.
-        //    - NOTE: Because removeLast() operates on a tail, there is no temptation to rebalance
-        
-        // Shift-to-empty as we come up:
-        // | 1   3.
-        // | 1 | 1 ( 1   1.)
-        // | 1 | 1 | 1 | 1.
-        //
-        // | 1   3.
-        // | 1 | 1   2.)
-        // | 1 | 1 | 1 1.
-        //
-        // | 1   3.
-        // | 1 | 3.
-        // | 1 | 1 1 1.
-        //
-        // | 1   3.)
-        // | 1 | 3.
-        // | 1 | 1 1 1.
-        //
-        // | 4.
-        // | 4.
-        // | 1 1 1 1.
-        
-        
-        // Concat from the highest level:
-        // | 1   3.
-        // | 1 | 1   1   1.
-        // | 1 | 1 | 1 | 1.
-        //
-        // | 1   3.
-        // | 1 | 1   1   1.
-        // | 2 | 0 | 1 | 1.
-        //
-        // | 1   3.
-        // | 2 | 0   1   1.
-        // | 2 | 0 | 1 | 1.
-        //
-        // | 1   3.
-        // | 2 | 1   1.
-        // | 2 | 1 | 1.
-        //
-        // | 4.
-        // | 2   1   1.
-        // | 2 | 1 | 1.
     }
     
     // Pros with a draining join:
@@ -1144,6 +1280,277 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     // for the tree to increase in height, because the search-step invariant is more lenient on how wasted space can be
     // distributed, which makes it easier to accumulate more of it.
     
+    private static ParentNode rebalance1(ParentNode node, int shift, boolean isRightmost) {
+        // Variant of rebalance used by removeRange when one child changes
+        
+        Object[] children = node.children;
+        int totalNodes = 0;
+        for (Object child : children) {
+            totalNodes += ((Node) child).children.length;
+        }
+        
+        int minLength = ((totalNodes-1) / SPAN) + 1;
+        int maxLength = minLength + MARGIN;
+        int curLength = children.length;
+        if (curLength <= maxLength) {
+            // Yay, no rebalancing needed
+            // TODO: Implement a faster refresh for the special case of one child changed
+            return node.refreshSizes(isRightmost, shift);
+        }
+        
+        Node lastNode = isRightmost ? (Node) children[curLength-1] : null;
+        int i = 0, step = 1, childShift = shift - SHIFT;
+        long deathRow = 0;
+        
+        do {
+            int curLen;
+            while ((curLen = ((Node) children[i]).children.length) >= DO_NOT_REDISTRIBUTE) {
+                i += step;
+                step = 1;
+            }
+            int skip = 0;
+            for (;;) {
+                int j = i + step;
+                step = 1;
+                
+                Node rChildNode = (Node) children[j];
+                int slots = SPAN - curLen;
+                int items = rChildNode.children.length;
+                
+                if (slots < items) {
+                    // Fill the rest of the left child with the right child
+                    node.editChild(i, skip, curLen, slots, rChildNode, node.owns(j), false, childShift);
+                    i = j;
+                    skip = slots;
+                    curLen = items - slots;
+                }
+                else {
+                    // Empty the rest of the right child into the left child
+                    // TODO: If the outer loop doesn't break here, we may end up resizing this child again.
+                    node.editChild(i, skip, curLen, items, rChildNode, node.owns(j), rChildNode == lastNode, childShift);
+                    deathRow |= (1L << j);
+                    step = 2; // Ensure we step over the gap we just created
+                    break;
+                }
+            }
+        } while (--curLength > maxLength);
+        
+        node.shiftChildren(deathRow, 0, 0, null, 0);
+        return node.refreshSizes(isRightmost, shift);
+    }
+    
+    private static ParentNode rebalance12(ParentNode parent, int fromChildIdx, int toChildIdx, int shift, boolean isRightmost) {
+        // Variant of rebalance used by removeRange when two children of one parent change (with range-to-remove between them)
+        
+        Object[] children = parent.children;
+        Node leftNode = (Node) children[fromChildIdx], rightNode = (Node) children[toChildIdx];
+        
+        if (leftNode == EMPTY_NODE) {
+            if (rightNode == EMPTY_NODE) {
+                if (toChildIdx - fromChildIdx + 1 == parent.children.length) {
+                    // Nothing left - Parent becomes empty
+                    return EMPTY_NODE;
+                }
+                // Shift to remove, refresh sizes
+                // Removing children cannot increase parent's excess, so no rebalancing needed
+                // TODO: Implement a faster range-removal + refresh for the special case of contiguous range
+                long deathRow = (fromChildIdx == 0 ? -1L : (-2L << (fromChildIdx-1))) & ~(-2L << (toChildIdx+1));
+                parent.shiftChildren(deathRow, 0, 0, null, 0);
+                return parent.refreshSizes(isRightmost, shift);
+            }
+            fromChildIdx--;
+        }
+        else if (rightNode == EMPTY_NODE) {
+            toChildIdx++;
+        }
+        
+        int len = parent.children.length, totalNodes = 0;
+        for (int i = 0; i <= fromChildIdx; i++) {
+            totalNodes += ((Node) children[i]).children.length;
+        }
+        for (int i = toChildIdx; i < len; i++) {
+            totalNodes += ((Node) children[i]).children.length;
+        }
+        
+        long deathRow = (fromChildIdx < 0 ? -1L : (-2L << fromChildIdx)) & ~(-2L << toChildIdx);
+        int minLength = ((totalNodes-1) / SPAN) + 1;
+        int maxLength = minLength + MARGIN;
+        int curLength = len - toChildIdx + fromChildIdx + 1;
+        if (curLength <= maxLength) {
+            // Yay, no rebalancing needed
+            // TODO: Implement a faster range-removal + refresh for the special case of contiguous range
+            parent.shiftChildren(deathRow, 0, 0, null, 0);
+            return parent.refreshSizes(isRightmost, shift);
+        }
+        
+        Node lastNode = isRightmost ? (Node) children[len-1] : null;
+        int i, llen, rlen, step = 1, childShift = shift - SHIFT;
+        if (fromChildIdx != -1) {
+            i = 0;
+            rlen = llen = fromChildIdx+1;
+        }
+        else {
+            i = toChildIdx;
+            rlen = llen = len;
+        }
+        
+        do {
+            int curLen;
+            while ((curLen = ((Node) children[i]).children.length) >= DO_NOT_REDISTRIBUTE) {
+                if ((i += step) >= llen) {
+                    // We will hit this case at most once
+                    i = toChildIdx;
+                    llen = len;
+                }
+                step = 1;
+            }
+            int skip = 0;
+            for (;;) {
+                int j = i + step;
+                if (j >= llen) {
+                    // We may hit this case multiple times, if we empty the first child
+                    // on the right and the last child on the left is still below threshold
+                    j = toChildIdx;
+                    rlen = len;
+                }
+                step = 1;
+                
+                Node rChildNode = (Node) children[j];
+                int slots = SPAN - curLen;
+                int items = rChildNode.children.length;
+                
+                if (slots < items) {
+                    // Fill the rest of the left child with the right child
+                    parent.editChild(i, skip, curLen, slots, rChildNode, parent.owns(j), false, childShift);
+                    i = j;
+                    llen = rlen;
+                    skip = slots;
+                    curLen = items - slots;
+                }
+                else {
+                    // Empty the rest of the right child into the left child
+                    // TODO: If the outer loop doesn't break here, we may end up resizing this child again.
+                    parent.editChild(i, skip, curLen, items, rChildNode, parent.owns(j), rChildNode == lastNode, childShift);
+                    deathRow |= (1L << j);
+                    step = 2; // Ensure we step over the gap we just created
+                    break;
+                }
+            }
+        } while (--curLength > maxLength);
+        
+        parent.shiftChildren(deathRow, 0, 0, null, 0);
+        return parent.refreshSizes(isRightmost, shift);
+    }
+    
+    private static void rebalance22(Node[] parents, int fromChildIdx, int toChildIdx, int shift, boolean isRightmost) {
+        // Variant of rebalance used by removeRange when two children of two parents change (with range-to-remove between them)
+        
+        ParentNode left = (ParentNode) parents[0], right = (ParentNode) parents[1];
+        Object[] leftChildren = left.children, rightChildren = right.children;
+        Node leftNode = (Node) leftChildren[fromChildIdx], rightNode = (Node) rightChildren[toChildIdx];
+        
+        if (leftNode == EMPTY_NODE) {
+            if (rightNode == EMPTY_NODE) {
+                // Remove range (which will return EMPTY_NODE if range is [0,len))
+                // TODO: Override removeRange for [Sized]ParentNode
+                // TODO: Try empty right into left
+                parents[0] = left.removeRange(true, fromChildIdx, leftChildren.length);
+                parents[1] = right.removeRange(true, 0, toChildIdx+1);
+                return;
+            }
+            fromChildIdx--;
+        }
+        else if (rightNode == EMPTY_NODE) {
+            toChildIdx++;
+        }
+        
+        int leftLen = leftChildren.length, rightLen = rightChildren.length, totalNodes = 0;
+        for (int i = 0; i <= fromChildIdx; i++) {
+            totalNodes += ((Node) leftChildren[i]).children.length;
+        }
+        for (int i = toChildIdx; i < rightLen; i++) {
+            totalNodes += ((Node) rightChildren[i]).children.length;
+        }
+        
+        int minLength = ((totalNodes-1) / SPAN) + 1;
+        int maxLength = minLength + MARGIN;
+        int curLength = rightLen - toChildIdx + fromChildIdx + 1;
+        if (curLength <= maxLength) {
+            // Yay, no rebalancing needed
+            // TODO: Override removeRange for [Sized]ParentNode
+            // TODO: Try empty right into left
+            parents[0] = left.removeRange(true, Math.max(fromChildIdx, 0), leftLen);
+            parents[1] = right.removeRange(true, 0, Math.min(toChildIdx+1, rightLen));
+            return;
+        }
+        
+        ParentNode lNode = left, rNode = left;
+        Object[] lchildren = leftChildren, rchildren = leftChildren;
+        Node lastNode = isRightmost ? (Node) rightChildren[rightLen-1] : null;
+        //
+        int i = 0, step = 1, llen = leftLen, rlen = llen, childShift = shift - SHIFT;
+        long leftDeathRow = , rightDeathRow = 0;
+        boolean updatedLeft = false;
+        
+        do {
+            int curLen;
+            while ((curLen = ((Node) lchildren[i]).children.length) >= DO_NOT_REDISTRIBUTE) {
+                if ((i += step) >= llen) {
+                    // We will hit this case at most once
+                    i -= llen + toChildIdx;
+                    llen = rightChildren.length;
+                    lNode = right;
+                    lchildren = rightChildren;
+                }
+                step = 1;
+            }
+            updatedLeft = updatedLeft || lNode == left;
+            int skip = 0;
+            for (;;) {
+                int j = i + step;
+                if (j >= llen) {
+                    // We may hit this case multiple times, if we empty the first child
+                    // on the right and the last child on the left is still below threshold
+                    j -= llen + toChildIdx;
+                    rlen = rightChildren.length;
+                    rNode = right;
+                    rchildren = rightChildren;
+                }
+                step = 1;
+                
+                Node rChildNode = (Node) rchildren[j];
+                int slots = SPAN - curLen;
+                int items = rChildNode.children.length;
+                
+                if (slots < items) {
+                    // Fill the rest of the left child with the right child
+                    lNode.editChild(i, skip, curLen, slots, rChildNode, rNode.owns(j), false, childShift);
+                    i = j;
+                    llen = rlen;
+                    lNode = rNode;
+                    lchildren = rchildren;
+                    skip = slots;
+                    curLen = items - slots;
+                }
+                else {
+                    // Empty the rest of the right child into the left child
+                    // TODO: If the outer loop doesn't break here, we may end up resizing this child again.
+                    lNode.editChild(i, skip, curLen, items, rChildNode, rNode.owns(j), rChildNode == lastNode, childShift);
+                    
+                    if (rNode == left) {
+                        leftDeathRow |= (1L << j);
+                    }
+                    else {
+                        rightDeathRow |= (1L << j);
+                    }
+                    
+                    step = 2; // Ensure we step over the gap we just created
+                    break;
+                }
+            }
+        } while (--curLength > maxLength);
+    }
+    
     private static void rebalance(ConcatState state, int shift, boolean isRightmost, boolean isRightFirstChildEmpty) {
         // Assume left and right are editable
         
@@ -1204,13 +1611,70 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         
         // Rebalance to eliminate excess children
         
-        boolean updatedLeft = false;
-        long leftDeathRow = 0, rightDeathRow = isRightFirstChildEmpty ? 1 : 0; // long assumes SPAN <= 64
-        int i = 0, step = 1, childShift = shift - SHIFT,
-            llen = leftChildren.length, rlen = leftChildren.length;
+        RebalanceResult result = doRebalance(left, right, maxLength - curLength, shift - SHIFT, isRightmost, isRightFirstChildEmpty);
+        
+        // Fixup left/right - remove emptied children, empty right into left if possible, and refresh sizes
+        
+        if (result.rightDeathRow == 0) { // Did not update right - must have updated left only (and leftDeathRow != 0)
+            int remainingLeft = leftChildren.length - Long.bitCount(result.leftDeathRow);
+            if (remainingLeft + rightChildren.length <= SPAN) {
+                // Removing some from left makes right fit in
+                left.shiftChildren(result.leftDeathRow, 0, rightChildren.length, right, 0);
+                state.left = left.refreshSizes(isRightmost, shift);
+                state.right = EMPTY_NODE;
+            }
+            else {
+                // Removing some from left does not make right fit in
+                left.shiftChildren(result.leftDeathRow, 0, 0, null, 0);
+                state.left = left.refreshSizes(false, shift);
+                state.right = right.refreshSizesIfLeftmostChildChanged(isRightmost, shift);
+            }
+        }
+        else if (!result.updatedLeft) { // Updated right only
+            int remainingRight = rightChildren.length - Long.bitCount(result.rightDeathRow);
+            if (leftChildren.length + remainingRight <= SPAN) {
+                // Removing some from right makes it fit in left
+                left.shiftChildren(0, 0, remainingRight, right, result.rightDeathRow);
+                state.left = left.refreshSizes(isRightmost, shift);
+                state.right = EMPTY_NODE;
+            }
+            else {
+                // Removing some from right does not make it fit in left
+                right.shiftChildren(result.rightDeathRow, 0, 0, null, 0);
+                state.right = right.refreshSizes(isRightmost, shift);
+                state.left = left.refreshSizesIfRightmostChildChanged(false, shift);
+            }
+        }
+        else { // Updated both
+            // Since we're touching both anyway, we transfer as much as
+            // we can from right to left, even if it doesn't empty right
+            int remainingLeft = leftChildren.length - Long.bitCount(result.leftDeathRow);
+            int remainingRight = rightChildren.length - Long.bitCount(result.rightDeathRow);
+            int xfer = Math.min(SPAN - remainingLeft, remainingRight); // Possibly both 0
+            left.shiftChildren(result.leftDeathRow, 0, xfer, right, result.rightDeathRow); // Possibly a no-op, if leftDeathRow == xfer == 0
+            if (xfer == remainingRight) {
+                state.left = left.refreshSizes(isRightmost, shift);
+                state.right = EMPTY_NODE;
+            }
+            else {
+                right.shiftChildren(result.rightDeathRow, xfer, 0, null, 0);
+                state.right = right.refreshSizes(isRightmost, shift);
+                state.left = left.refreshSizes(false, shift);
+            }
+        }
+    }
+    
+    record RebalanceResult(long leftDeathRow, long rightDeathRow, boolean updatedLeft) { }
+    
+    private static RebalanceResult doRebalance(ParentNode left, ParentNode right,
+                                               int excess, int childShift, boolean isRightmost, boolean isRightFirstChildEmpty) {
         ParentNode lNode = left, rNode = left;
-        Object[] lchildren = leftChildren, rchildren = leftChildren;
+        Object[] leftChildren = left.children, rightChildren = right.children, lchildren = leftChildren, rchildren = leftChildren;
         Node lastNode = isRightmost ? (Node) rightChildren[rightChildren.length-1] : null;
+        int i = 0, step = 1, llen = leftChildren.length, rlen = llen;
+        long leftDeathRow = 0, rightDeathRow = isRightFirstChildEmpty ? 1 : 0; // long assumes SPAN <= 64
+        boolean updatedLeft = false;
+        
         do {
             int curLen;
             while ((curLen = ((Node) lchildren[i]).children.length) >= DO_NOT_REDISTRIBUTE) {
@@ -1271,57 +1735,9 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                     break;
                 }
             }
-        } while (--curLength > maxLength);
+        } while (--excess > 0);
         
-        // Fixup left/right - remove emptied children, empty right into left if possible, and refresh sizes
-        
-        if (rightDeathRow == 0) { // Did not update right - must have updated left only (and leftDeathRow != 0)
-            int remainingLeft = leftChildren.length - Long.bitCount(leftDeathRow);
-            if (remainingLeft + rightChildren.length <= SPAN) {
-                // Removing some from left makes right fit in
-                left.shiftChildren(leftDeathRow, 0, rightChildren.length, right, 0);
-                state.left = left.refreshSizes(isRightmost, shift);
-                state.right = EMPTY_NODE;
-            }
-            else {
-                // Removing some from left does not make right fit in
-                left.shiftChildren(leftDeathRow, 0, 0, null, 0);
-                state.left = left.refreshSizes(false, shift);
-                state.right = right.refreshSizesIfLeftmostChildChanged(isRightmost, shift);
-            }
-        }
-        else if (!updatedLeft) { // Updated right only
-            int remainingRight = rightChildren.length - Long.bitCount(rightDeathRow);
-            if (leftChildren.length + remainingRight <= SPAN) {
-                // Removing some from right makes it fit in left
-                left.shiftChildren(0, 0, remainingRight, right, rightDeathRow);
-                state.left = left.refreshSizes(isRightmost, shift);
-                state.right = EMPTY_NODE;
-            }
-            else {
-                // Removing some from right does not make it fit in left
-                right.shiftChildren(rightDeathRow, 0, 0, null, 0);
-                state.right = right.refreshSizes(isRightmost, shift);
-                state.left = left.refreshSizesIfRightmostChildChanged(false, shift);
-            }
-        }
-        else { // Updated both
-            // Since we're touching both anyway, we transfer as much as
-            // we can from right to left, even if it doesn't empty right
-            int remainingLeft = leftChildren.length - Long.bitCount(leftDeathRow);
-            int remainingRight = rightChildren.length - Long.bitCount(rightDeathRow);
-            int xfer = Math.min(SPAN - remainingLeft, remainingRight); // Possibly both 0
-            left.shiftChildren(leftDeathRow, 0, xfer, right, rightDeathRow); // Possibly a no-op, if leftDeathRow == xfer == 0
-            if (xfer == remainingRight) {
-                state.left = left.refreshSizes(isRightmost, shift);
-                state.right = EMPTY_NODE;
-            }
-            else {
-                right.shiftChildren(rightDeathRow, xfer, 0, null, 0);
-                state.right = right.refreshSizes(isRightmost, shift);
-                state.left = left.refreshSizes(false, shift);
-            }
-        }
+        return new RebalanceResult(leftDeathRow, rightDeathRow, updatedLeft);
     }
     
     // Fixing-up left/right at the end of rebalance:
@@ -1408,7 +1824,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         
         @Override
         public ForkJoinList<E> fork() {
-            return root.fork(offset, offset + size);
+            return root.forkRange(offset, offset + size);
         }
         
         @Override
@@ -1473,6 +1889,22 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 return new Node(newChildren);
             }
             return copy(isOwned);
+        }
+        
+        Node removeRange(boolean isOwned, int from, int to) {
+            int len = children.length;
+            if (from == 0 && to == len) {
+                return EMPTY_NODE;
+            }
+            int newSize = len - (to-from);
+            Object[] newChildren = new Object[newSize];
+            System.arraycopy(children, 0, newChildren, 0, from);
+            System.arraycopy(children, to, newChildren, from, len-to);
+            if (isOwned) {
+                children = newChildren;
+                return this;
+            }
+            return new Node(newChildren);
         }
         
         Node copySized(boolean isOwned, int shift) {
@@ -1583,6 +2015,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         
         static int mask(int shift) {
+            // TODO: Alternatively: ~(-2 << shift), or just (-2 << shift) for negated mask
             return (1 << shift) - 1;
         }
         
@@ -1667,7 +2100,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         
         ParentNode copyPrefix(boolean isOwned, int toIndex, Node newLastChild, int shift) {
-            disownPrefix(toIndex); // TODO: avoid if isOwned (currently, isOwned = false always)
+            disownPrefix(toIndex); // TODO: avoid if isOwned
             ParentNode newNode = copy(isOwned, toIndex+1);
             newNode.claim(toIndex);
             newNode.children[toIndex] = newLastChild;
@@ -1675,7 +2108,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         
         ParentNode copySuffix(boolean isOwned, int fromIndex, Node newFirstChild, boolean isRightmost, int shift) {
-            disownSuffix(fromIndex+1); // TODO: avoid if isOwned (currently, isOwned = false always)
+            disownSuffix(fromIndex+1); // TODO: avoid if isOwned
             ParentNode newNode = copySuffix(isOwned, fromIndex);
             newNode.claim(0);
             newNode.children[0] = newFirstChild;
@@ -1684,7 +2117,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         
         ParentNode copyRange(boolean isOwned, int fromIndex, Node newFirstChild, int toIndex, Node newLastChild, int shift) {
             int lastIdx = toIndex-fromIndex;
-            disownRange(fromIndex+1, toIndex); // TODO: avoid if isOwned (currently, isOwned = false always)
+            disownRange(fromIndex+1, toIndex); // TODO: avoid if isOwned
             ParentNode newNode = copyRange(isOwned, fromIndex, toIndex+1);
             newNode.claim(0);
             newNode.claim(lastIdx);
@@ -2003,7 +2436,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         
         @Override
         ParentNode copyPrefix(boolean isOwned, int toIndex, Node newLastChild, int shift) {
-            disownPrefix(toIndex); // TODO: avoid if isOwned (currently, isOwned = false always)
+            disownPrefix(toIndex); // TODO: avoid if isOwned
             ParentNode newNode = copy(isOwned, toIndex+1); // TODO: Truncating-copy could make us not-Sized
             newNode.claim(toIndex);
             newNode.children[toIndex] = newLastChild;
@@ -2012,7 +2445,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         
         @Override
         ParentNode copySuffix(boolean isOwned, int fromIndex, Node newFirstChild, boolean isRightmost, int shift) {
-            disownSuffix(fromIndex+1); // TODO: avoid if isOwned (currently, isOwned = false always)
+            disownSuffix(fromIndex+1); // TODO: avoid if isOwned
             ParentNode newNode = copySuffix(isOwned, fromIndex); // TODO: Truncating-copy could make us not-Sized
             newNode.claim(0);
             newNode.children[0] = newFirstChild;
