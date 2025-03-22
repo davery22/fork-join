@@ -294,22 +294,23 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         else {
             // Split root into left and right
-            int rightRootShift = rootShift;
+            int oldRootShift = rootShift;
             Node[] splitRoots = { getEditableRoot(), getEditableRoot() };
-            splitRec(index-1, index, splitRoots, true, rightRootShift);
+            int[] rootShifts = new int[2];
+            splitRec(index-1, index, splitRoots, rootShifts, true, true, oldRootShift);
             Node right = splitRoots[1];
             
             // Concat element onto left
             splitRoots[1] = new Node(new Object[]{ element});
-            concatSubTree(splitRoots, rightRootShift, rightRootShift, true);
-            assignRoot(splitRoots[0], splitRoots[1], rightRootShift);
+            concatSubTree(splitRoots, rootShifts[0], 0, true);
+            assignRoot(splitRoots[0], splitRoots[1], rootShifts[0]);
             
             // Concat right onto left
-            int leftRootShift = rootShift;
+            int newRootShift = rootShift;
             splitRoots[0] = root;
             splitRoots[1] = right;
-            concatSubTree(splitRoots, leftRootShift, rightRootShift, true);
-            assignRoot(splitRoots[0], splitRoots[1], Math.max(leftRootShift, rightRootShift));
+            concatSubTree(splitRoots, newRootShift, rootShifts[1], true);
+            assignRoot(splitRoots[0], splitRoots[1], Math.max(newRootShift, rootShifts[1]));
             size++;
         }
     }
@@ -355,11 +356,11 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             root = forkSuffixRec(index+1, this, getEditableRoot(), rootShift, true, true);
         }
         else {
-            int oldRootShift = rootShift;
             Node[] splitRoots = { getEditableRoot(), getEditableRoot() };
-            splitRec(index-1, index+1, splitRoots, true, oldRootShift);
-            concatSubTree(splitRoots, oldRootShift, oldRootShift, true);
-            assignRoot(splitRoots[0], splitRoots[1], oldRootShift);
+            int[] rootShifts = new int[2];
+            splitRec(index-1, index+1, splitRoots, rootShifts, true, true, rootShift);
+            concatSubTree(splitRoots, rootShifts[0], rootShifts[1], true);
+            assignRoot(splitRoots[0], splitRoots[1], Math.max(rootShifts[0], rootShifts[1]));
         }
         size--;
         return old;
@@ -671,11 +672,11 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         //  ownership of the prefix and suffix instead of forking.
         
         // Starts and ends in the root
-        int oldRootShift = rootShift;
         Node[] splitRoots = { getEditableRoot(), getEditableRoot() };
-        splitRec(fromIndex-1, toIndex, splitRoots, true, oldRootShift);
-        concatSubTree(splitRoots, oldRootShift, oldRootShift, true);
-        assignRoot(splitRoots[0], splitRoots[1], oldRootShift);
+        int[] rootShifts = new int[2];
+        splitRec(fromIndex-1, toIndex, splitRoots, rootShifts, true, true, rootShift);
+        concatSubTree(splitRoots, rootShifts[0], rootShifts[1], true);
+        assignRoot(splitRoots[0], splitRoots[1], Math.max(rootShifts[0], rootShifts[1]));
     }
     
     private void removeSuffix(int fromIndex) {
@@ -731,12 +732,13 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         root = forkSuffixRec(toIndex, this, getEditableRoot(), rootShift, true, true);
     }
     
-    private void splitRec(int fromIndex, int toIndex, Node[] nodes, boolean isRightmost, int shift) {
+    private static void splitRec(int fromIndex, int toIndex, Node[] nodes, int[] rootShifts, boolean isLeftmost, boolean isRightmost, int shift) {
         // TODO: Don't assume nodes are owned - pass in isLeftOwned, isRightOwned
         
         int fromChildIdx = (fromIndex >>> shift) & MASK;
         int toChildIdx = (toIndex >>> shift) & MASK;
         if (shift == 0) {
+            rootShifts[0] = rootShifts[1] = shift;
             nodes[0] = nodes[0].copy(nodes[0] != nodes[1], fromChildIdx+1);
             nodes[1] = nodes[1].copySuffix(true, toChildIdx);
             return;
@@ -786,19 +788,26 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         
         int childShift = shift - SHIFT;
+        boolean isChildLeftmost = isLeftmost && fromChildIdx == 0;
         boolean isChildRightmost = isRightmost && toChildIdx == right.children.length-1;
         nodes[0] = left.getEditableChild(fromChildIdx);
         nodes[1] = right.getEditableChild(toChildIdx);
-        splitRec(fromIndex, toIndex, nodes, isChildRightmost, childShift);
+        splitRec(fromIndex, toIndex, nodes, rootShifts, isChildLeftmost, isChildRightmost, childShift);
         
-        // To avoid breaking the second copy, we only do the first copy in-place if left != right (no aliasing).
-        // Unfortunately, if we need out-of-place, the copy method disowns copied children, because it assumes that the
-        // existing tree is now sharing children with a new tree. But here we are discarding the existing tree.
-        // So we copy-and-restore ownership of children.
-        var oldOwns = left.owns;
-        nodes[0] = left = left.copyPrefix(left != right, fromChildIdx, nodes[0], shift);
-        nodes[1] = right.copySuffix(true, toChildIdx, nodes[1], isRightmost, shift);
-        left.owns = oldOwns; // Don't worry about the removed suffix - trailing ownership is ignored
+        if (!isChildLeftmost) {
+            rootShifts[0] = shift;
+            // To avoid breaking the suffix copy, we only do the prefix copy in-place if left != right (no aliasing).
+            // Unfortunately, if we need out-of-place, the copy method disowns copied children, because it assumes that
+            // the existing tree is now sharing children with a new tree. But here we are discarding the existing tree.
+            // So we copy-and-restore ownership of children.
+            var oldOwns = left.owns;
+            nodes[0] = left = left.copyPrefix(left != right || isChildRightmost, fromChildIdx, nodes[0], shift);
+            left.owns = oldOwns; // Don't worry about the removed suffix - trailing ownership is ignored
+        }
+        if (!isChildRightmost) {
+            rootShifts[1] = shift;
+            nodes[1] = right.copySuffix(true, toChildIdx, nodes[1], isRightmost, shift);
+        }
     }
     
     private TrieForkJoinList<E> forkRange(int fromIndex, int toIndex) {
