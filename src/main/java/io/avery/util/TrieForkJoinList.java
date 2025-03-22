@@ -130,10 +130,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         tail = toCopy.tail;
     }
     
-    // add(index, element) - specialized self-concat, unless after tailOffset
     // addAll(collection) - Use collection.toArray()
     // addAll(index, collection) - Use collection.toArray(), or join(index, new [owned] TrieForkJoinList<>(collection)), unless after tailOffset
-    // remove(index) - removeRange, unless after tailOffset
     // removeAll(collection) - removeRange
     // retainAll(collection) - removeRange
     // removeIf(predicate) - bitset + listIterator + removeRange
@@ -151,8 +149,10 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     // -get(index)
     // -set(index, element)
     // -add(element)
+    // -add(index, element)
     // -clear()
     // -reversed()
+    // -remove(index)
     // -size()
     // -fork()
     // -join(collection)
@@ -653,9 +653,9 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 return;
             }
             
+            // Starts in the root, ends at or in the tail
             root = forkPrefixRec(fromIndex, this, getEditableRoot(), rootShift, true, true);
             if (toIndex != tailOffset) {
-                // Starts in the root, ends in the tail
                 Node newTail = getEditableTail();
                 int oldTailSize = tailSize, tailIdx = toIndex - tailOffset;
                 int newTailSize = tailSize = oldTailSize - tailIdx;
@@ -668,7 +668,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         // NOTE: We may be leaving some performance on the table, in exchange for sanity.
         //  We could implement a direct removeRange() that rebalances across the gap on the way up. I tried and ended up
         //  with three additional variants of rebalance(), along with some new node-copying variants, and plenty of glue
-        //  code. Instead, I'm using the "removeRange = join(prefix, suffix)" simplification, but optimizing to retain
+        //  code. Instead, I'm using the fact that removeRange = join(prefix, suffix), and optimizing to retain
         //  ownership of the prefix and suffix instead of forking.
         
         // Starts and ends in the root
@@ -682,10 +682,11 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     private void removeSuffix(int fromIndex) {
         // In-place version of forkPrefix()
         
-        if (fromIndex == 0) {
-            clear();
-            return;
-        }
+        // Already checked in removeRange() (caller)
+//        if (fromIndex == 0) {
+//            clear();
+//            return;
+//        }
         if (fromIndex == size) {
             return;
         }
@@ -721,6 +722,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         
         int newSize = size -= toIndex;
         if (newSize <= tailSize) {
+            rootShift = 0;
+            root = null;
             int oldTailSize = tailSize;
             tailSize = newSize;
             Node newTail = getEditableTail();
@@ -891,10 +894,11 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     }
     
     private TrieForkJoinList<E> forkSuffix(int fromIndex) {
-        if (fromIndex == 0) {
-            owns = 0;
-            return new TrieForkJoinList<>(this);
-        }
+        // Already checked in forkRange() (caller)
+//        if (fromIndex == 0) {
+//            owns = 0;
+//            return new TrieForkJoinList<>(this);
+//        }
         if (fromIndex == size) {
             return new TrieForkJoinList<>();
         }
@@ -1479,17 +1483,18 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     @Override
     public boolean join(int index, Collection<? extends E> other) {
         // TODO: Optimize - do join(index) directly and in-place
-        TrieForkJoinList<E> left = forkPrefix(index);
-        TrieForkJoinList<E> right = forkSuffix(index);
-        boolean added = left.join(other);
-        left.join(right);
-        size = left.size;
-        tailSize = left.tailSize;
-        rootShift = left.rootShift;
-        root = left.root;
-        tail = left.tail;
-        owns = left.owns;
-        return added;
+//        TrieForkJoinList<E> left = forkPrefix(index);
+//        TrieForkJoinList<E> right = forkSuffix(index); // Does not check index == 0
+//        boolean added = left.join(other);
+//        left.join(right);
+//        size = left.size;
+//        tailSize = left.tailSize;
+//        rootShift = left.rootShift;
+//        root = left.root;
+//        tail = left.tail;
+//        owns = left.owns;
+//        return added;
+        throw new UnsupportedOperationException();
     }
     
     private int tailOffset() {
