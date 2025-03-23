@@ -500,23 +500,9 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         // For appends, fixupSizes = false, ie we allow nodes with not-full children to stay not-Sized.
         // For joins, fixupSizes = true, ie when we push down the left tail we make nodes with not-full children Sized.
         
-        int oldTailSize = tailSize;
-        boolean nonFullTail = oldTailSize < SPAN;
-        
         if (root == null) {
-            if (nonFullTail) {
-                // TODO: Remove
-                Sizes sizes = Sizes.of(rootShift = SHIFT, 1);
-                sizes.set(0, oldTailSize);
-                claimRoot();
-                ParentNode newRoot = new SizedParentNode(new Object[]{ tail }, sizes);
-                newRoot.claimOrDisown(0, ownsTail());
-                root = newRoot;
-            }
-            else {
-                claimOrDisownRoot(ownsTail());
-                root = tail;
-            }
+            claimOrDisownRoot(ownsTail());
+            root = tail;
             return;
         }
         
@@ -536,7 +522,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             node = (Node) node.children[len-1];
         }
         
-        int deepestNonFullShift = !fixupSizes ? Integer.MAX_VALUE : nonFullTail ? 0 : deepestNonFullAncestorShift;
+        int oldTailSize = tailSize;
+        int deepestNonFullShift = !fixupSizes ? Integer.MAX_VALUE : oldTailSize != SPAN ? 0 : deepestNonFullAncestorShift;
         
         // Second pass
         if (deepestNonFullAncestorShift > oldRootShift) {
