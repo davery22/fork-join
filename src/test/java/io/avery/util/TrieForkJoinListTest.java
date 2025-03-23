@@ -34,6 +34,14 @@ class TrieForkJoinListTest {
             argumentSet("join3", id(TrieForkJoinListTest::join3)),
             argumentSet("join4", id(TrieForkJoinListTest::join4)),
             argumentSet("join5", id(TrieForkJoinListTest::join5)),
+            argumentSet("joinAtIndex1", id(TrieForkJoinListTest::joinAtIndex1)),
+            argumentSet("joinAtIndex2", id(TrieForkJoinListTest::joinAtIndex2)),
+            argumentSet("joinAtIndex3", id(TrieForkJoinListTest::joinAtIndex3)),
+            argumentSet("joinAtIndex4", id(TrieForkJoinListTest::joinAtIndex4)),
+            argumentSet("joinAtIndex5", id(TrieForkJoinListTest::joinAtIndex5)),
+            argumentSet("joinAtIndex6", id(TrieForkJoinListTest::joinAtIndex6)),
+            argumentSet("joinAtIndex7", id(TrieForkJoinListTest::joinAtIndex7)),
+            argumentSet("joinAtIndex8", id(TrieForkJoinListTest::joinAtIndex8)),
             argumentSet("subListFork1", id(TrieForkJoinListTest::subListFork1)),
             argumentSet("removeRange1", id(TrieForkJoinListTest::removeRange1)),
             argumentSet("removeRange2", id(TrieForkJoinListTest::removeRange2)),
@@ -114,6 +122,76 @@ class TrieForkJoinListTest {
             result.join(right);
         }
         return result;
+    }
+    
+    static ForkJoinList<Integer> joinAtIndex1(Factory factory) {
+        // Insert a tail into the existing tail, new tail fits into existing tail
+        int size = SPAN*1000 - SPAN/2;
+        ForkJoinList<Integer> list = listOfSize(factory, size);
+        ForkJoinList<Integer> toInsert = listOfSize(factory, SPAN/2);
+        list.join(size - SPAN/4, toInsert);
+        return list;
+    }
+    
+    static ForkJoinList<Integer> joinAtIndex2(Factory factory) {
+        // Insert a tail into the existing tail, new tail does not fit into existing tail
+        int size = SPAN*1000 - SPAN/2;
+        ForkJoinList<Integer> list = listOfSize(factory, size);
+        ForkJoinList<Integer> toInsert = listOfSize(factory, SPAN);
+        list.join(size - SPAN/4, toInsert);
+        return list;
+    }
+    
+    static ForkJoinList<Integer> joinAtIndex3(Factory factory) {
+        // Insert a tree into the existing tail, new tail fits into existing tail
+        int size = SPAN*1000 - SPAN/2;
+        ForkJoinList<Integer> list = listOfSize(factory, size);
+        ForkJoinList<Integer> toInsert = listOfSize(factory, size);
+        list.join(size - SPAN/4, toInsert);
+        return list;
+    }
+    
+    static ForkJoinList<Integer> joinAtIndex4(Factory factory) {
+        // Insert a tree into the existing tail, new tail does not fit into existing tail
+        int size = SPAN*1000 - SPAN/2;
+        ForkJoinList<Integer> list = listOfSize(factory, size);
+        ForkJoinList<Integer> toInsert = listOfSize(factory, size + SPAN/2);
+        list.join(size - SPAN/4, toInsert);
+        return list;
+    }
+    
+    static ForkJoinList<Integer> joinAtIndex5(Factory factory) {
+        // Insert a tree at start of the existing tail, new tail fits into existing tail
+        int size = SPAN*1000 - SPAN/2;
+        ForkJoinList<Integer> list = listOfSize(factory, size);
+        ForkJoinList<Integer> toInsert = listOfSize(factory, size);
+        list.join(size - SPAN/2, toInsert);
+        return list;
+    }
+    
+    static ForkJoinList<Integer> joinAtIndex6(Factory factory) {
+        // Insert a tree at start of the existing tail, new tail does not fit into existing tail
+        int size = SPAN*1000 - SPAN/2;
+        ForkJoinList<Integer> list = listOfSize(factory, size);
+        ForkJoinList<Integer> toInsert = listOfSize(factory, size + SPAN/2);
+        list.join(size - SPAN/2, toInsert);
+        return list;
+    }
+    
+    static ForkJoinList<Integer> joinAtIndex7(Factory factory) {
+        // Prepend a tree
+        ForkJoinList<Integer> list = listOfSize(factory, 10000);
+        ForkJoinList<Integer> toInsert = listOfSize(factory, 5000);
+        list.join(0, toInsert);
+        return list;
+    }
+    
+    static ForkJoinList<Integer> joinAtIndex8(Factory factory) {
+        // Insert a tree into root
+        ForkJoinList<Integer> list = listOfSize(factory, 10000);
+        ForkJoinList<Integer> toInsert = listOfSize(factory, 5000);
+        list.join(4200, toInsert);
+        return list;
     }
     
     static ForkJoinList<Integer> subListFork1(Factory factory) {

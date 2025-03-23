@@ -180,10 +180,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     // -stream() - Collection
     // -parallelStream() - Collection
     
-    
-    // slice_left[_rec]
-    // slice_right[_rec]
-    
     @Override
     public E get(int index) {
         Objects.checkIndex(index, size);
@@ -287,17 +283,16 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         else if (index == 0) {
             // Concat root onto element
-            Node[] nodes = { new Node(new Object[]{ element }), root };
+            Node[] nodes = { new Node(new Object[]{ element }), getEditableRoot() };
             concatSubTree(nodes, 0, rootShift, true);
             assignRoot(nodes[0], nodes[1], rootShift);
             size++;
         }
         else {
             // Split root into left and right
-            int oldRootShift = rootShift;
             Node[] splitRoots = { getEditableRoot(), getEditableRoot() };
             int[] rootShifts = new int[2];
-            splitRec(index-1, index, splitRoots, rootShifts, true, true, oldRootShift);
+            splitRec(index-1, index, splitRoots, rootShifts, true, true, rootShift);
             Node right = splitRoots[1];
             
             // Concat element onto left
@@ -510,6 +505,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         
         if (root == null) {
             if (nonFullTail) {
+                // TODO: Remove
                 Sizes sizes = Sizes.of(rootShift = SHIFT, 1);
                 sizes.set(0, oldTailSize);
                 claimRoot();
@@ -1123,9 +1119,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
 
         // Push down left tail
-        if (tail.children.length != tailSize) {
-            tail = tail.copy(claimTail(), tailSize);
-        }
+        trimTailToSize();
         pushDownTail(true);
         
         // Adopt right tail
@@ -1140,6 +1134,13 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         concatSubTree(nodes, rootShift, right.rootShift, true);
         assignRoot(nodes[0], nodes[1], Math.max(rootShift, right.rootShift));
         return true;
+    }
+    
+    // Called before pushing down a possibly non-full tail during join
+    private void trimTailToSize() {
+        if (tail.children.length != tailSize) {
+            tail = tail.copy(claimTail(), tailSize);
+        }
     }
     
     // Reads size, tailSize
@@ -1292,8 +1293,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         
         if (right == EMPTY_NODE || (isRightFirstChildEmpty && right.children.length == 1)) {
             // If right is now empty, then we may have increased the grandchildren under left's rightmost child.
-            // Since the trees each start out balanced, and this change would only make left more dense,
-            // there is no rebalancing to do.
+            // Either way, left is no less balanced than it started, so no rebalancing to do.
             nodes[0] = left.refreshSizesIfRightmostChildChanged(isRightmost, shift);
             nodes[1] = EMPTY_NODE;
             return;
@@ -1482,19 +1482,146 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     
     @Override
     public boolean join(int index, Collection<? extends E> other) {
-        // TODO: Optimize - do join(index) directly and in-place
-//        TrieForkJoinList<E> left = forkPrefix(index);
-//        TrieForkJoinList<E> right = forkSuffix(index); // Does not check index == 0
-//        boolean added = left.join(other);
-//        left.join(right);
-//        size = left.size;
-//        tailSize = left.tailSize;
-//        rootShift = left.rootShift;
-//        root = left.root;
-//        tail = left.tail;
-//        owns = left.owns;
-//        return added;
-        throw new UnsupportedOperationException();
+        if (index == size) {
+            return join(other);
+        }
+        rangeCheckForAdd(index);
+        // TODO: Update if we add ForkJoinCollection superinterface
+        if (!(other instanceof ForkJoinList<? extends E> fjl)) {
+            return addAll(index, other);
+        }
+        if (!((other = fjl.fork()) instanceof TrieForkJoinList<? extends E> right)) {
+            return addAll(index, other); // TODO: Skip copying
+        }
+        if (right.isEmpty()) {
+            return false;
+        }
+        if (isEmpty()) {
+            size = right.size;
+            tailSize = right.tailSize;
+            rootShift = right.rootShift;
+            root = right.root;
+            tail = right.tail;
+            owns = 0;
+            return true;
+        }
+        
+        int tailOffset = tailOffset();
+        if (index >= tailOffset) {
+            int tailIdx = index - tailOffset;
+            if (right.root == null) {
+                // Right is just a tail.
+                // Either it all fits in left tail, or we will push down and make a new tail.
+                Node leftTail = getEditableTail();
+                int newTailSize = tailSize + right.tailSize;
+                if (newTailSize <= SPAN) {
+                    System.arraycopy(leftTail.children, tailIdx, leftTail.children, tailIdx + right.tailSize, tailSize - tailIdx);
+                    System.arraycopy(right.tail.children, 0, leftTail.children, tailIdx, right.tailSize);
+                    size += right.tailSize;
+                    tailSize = newTailSize;
+                    return true;
+                }
+                
+                // Prepare new tail
+                int spaceLeft = SPAN - tailIdx;
+                int takeRight = Math.min(right.tailSize, spaceLeft);
+                int takeLeft = spaceLeft - takeRight;
+                int remainingRight = right.tailSize - takeRight;
+                int remainingLeft = tailSize - tailIdx - takeLeft;
+                Object[] newChildren = new Object[SPAN];
+                System.arraycopy(right.tail.children, takeRight, newChildren, 0, remainingRight);
+                System.arraycopy(leftTail.children, tailSize - remainingLeft, newChildren, remainingRight, remainingLeft);
+                
+                // Fixup old tail and push down
+                System.arraycopy(leftTail.children, tailIdx, leftTail.children, tailIdx + takeRight, takeLeft);
+                System.arraycopy(right.tail.children, 0, leftTail.children, tailIdx, takeRight);
+                size += SPAN - tailSize;
+                tailSize = SPAN;
+                pushDownTail(false);
+                
+                tail = new Node(newChildren);
+                size += (tailSize = remainingRight + remainingLeft);
+                return true;
+            }
+            
+            Node rightTail = right.getEditableTail();
+            int spaceRight = SPAN - right.tailSize;
+            int leftSuffixSize = tailSize - tailIdx;
+            
+            if (leftSuffixSize > spaceRight) {
+                // Left tail suffix does not fit in right tail.
+                // Copy over what fits, push it down, push down left tail prefix, and set left tail to remaining suffix.
+                System.arraycopy(tail.children, tailIdx, rightTail.children, right.tailSize, spaceRight);
+                right.tailSize = SPAN;
+                right.size += spaceRight;
+                right.pushDownTail(false);
+                
+                int remainingSuffixSize = leftSuffixSize - spaceRight;
+                Object[] newTailChildren = new Object[SPAN];
+                System.arraycopy(tail.children, tailIdx + spaceRight, newTailChildren, 0, remainingSuffixSize);
+                size -= leftSuffixSize;
+                boolean ownsTail = claimTail();
+                if (tailIdx != 0) {
+                    tail = tail.copy(ownsTail, tailSize = tailIdx);
+                    pushDownTail(true);
+                }
+                tail = new Node(newTailChildren);
+                tailSize = remainingSuffixSize;
+                size += right.size + remainingSuffixSize;
+            }
+            else {
+                // Left tail suffix fits in right tail.
+                // Copy it over, push down left tail prefix, and set left tail to right tail.
+                System.arraycopy(tail.children, tailIdx, rightTail.children, right.tailSize, leftSuffixSize);
+                size -= leftSuffixSize;
+                boolean ownsTail = claimTail();
+                if (tailIdx != 0) {
+                    tail = tail.copy(ownsTail, tailSize = tailIdx);
+                    pushDownTail(true);
+                }
+                tail = right.tail;
+                tailSize = right.tailSize + leftSuffixSize;
+                size += right.size + leftSuffixSize;
+            }
+            
+            Node[] nodes = { getEditableRoot(), right.getEditableRoot() };
+            concatSubTree(nodes, rootShift, right.rootShift, true);
+            assignRoot(nodes[0], nodes[1], Math.max(rootShift, right.rootShift));
+            return true;
+        }
+        
+        if (index == 0) {
+            // Prepending
+            right.trimTailToSize();
+            right.pushDownTail(true);
+            Node[] nodes = { right.getEditableRoot(), getEditableRoot() };
+            concatSubTree(nodes, right.rootShift, rootShift, true);
+            assignRoot(nodes[0], nodes[1], Math.max(right.rootShift, rootShift));
+            size += right.size;
+            return true;
+        }
+        
+        // Split root into left and right
+        Node[] splitRoots = { getEditableRoot(), getEditableRoot() };
+        int[] rootShifts = new int[2];
+        splitRec(index-1, index, splitRoots, rootShifts, true, true, rootShift);
+        Node rightRoot = splitRoots[1];
+        
+        // Concat other tree onto left
+        right.trimTailToSize();
+        right.pushDownTail(true);
+        splitRoots[1] = right.root;
+        concatSubTree(splitRoots, rootShifts[0], right.rootShift, true);
+        assignRoot(splitRoots[0], splitRoots[1], Math.max(rootShifts[0], right.rootShift));
+        
+        // Concat right onto left
+        int newRootShift = rootShift;
+        splitRoots[0] = root;
+        splitRoots[1] = rightRoot;
+        concatSubTree(splitRoots, newRootShift, rootShifts[1], true);
+        assignRoot(splitRoots[0], splitRoots[1], Math.max(newRootShift, rootShifts[1]));
+        size += right.size;
+        return true;
     }
     
     private int tailOffset() {
