@@ -1,5 +1,6 @@
 package io.avery.util;
 
+import java.lang.reflect.Array;
 import java.util.*;
 
 // TODO: Implement RandomAccess?
@@ -135,17 +136,16 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     // removeAll(collection) - removeRange
     // retainAll(collection) - removeRange
     // removeIf(predicate) - bitset + listIterator + removeRange
-    // toArray() - AbstractCollection, but we can do better(?)
-    // toArray(arr) - AbstractCollection, but we can do better(?)
-    // toArray(gen) - Collection, but we can do better(?)
     // iterator()
     // listIterator()
     // listIterator(index)
     // subList(from, to)
     // spliterator()
-    // join(index, collection)
     
     // TODO: Make sure we handle modCount
+    //  - not to mention 'range' variants
+    // -toArray()
+    // -toArray(arr)
     // -get(index)
     // -set(index, element)
     // -add(element)
@@ -156,9 +156,11 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     // -size()
     // -fork()
     // -join(collection)
+    // -join(index, collection)
     
     // TODO: Some of these might need revisited just to handle modCount - see ArrayList
     //  - not to mention 'range' variants
+    // -toArray(gen) - Collection
     // -addFirst() - List
     // -addLast() - List
     // -contains(object) - AbstractCollection
@@ -179,6 +181,53 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     // -forEach(action) - Iterable
     // -stream() - Collection
     // -parallelStream() - Collection
+    
+    
+    @Override
+    public Object[] toArray() {
+        return toArray(new Object[size]);
+    }
+    
+    @Override
+    @SuppressWarnings("unchecked")
+    public <T> T[] toArray(T[] a) {
+        if (a.length < size) {
+            a = (T[]) Array.newInstance(a.getClass().componentType(), size);
+        }
+        int offset = 0;
+        if (root != null) {
+            if (rootShift == 0) {
+                System.arraycopy(root.children, 0, a, 0, offset = root.children.length);
+            }
+            else {
+                ToArrayState state = new ToArrayState();
+                state.arr = a;
+                toArrayRec(state, root, rootShift);
+                offset = state.offset;
+            }
+        }
+        System.arraycopy(tail.children, 0, a, offset, tailSize);
+        if (a.length > size)
+            a[size] = null;
+        return a;
+    }
+    
+    static class ToArrayState { Object[] arr; int offset; }
+    private static void toArrayRec(ToArrayState state, Node node, int shift) {
+        if (shift == SHIFT) {
+            for (Object child : node.children) {
+                Object[] children = ((Node) child).children;
+                System.arraycopy(children, 0, state.arr, state.offset, children.length);
+                state.offset += children.length;
+            }
+        }
+        else {
+            shift -= SHIFT;
+            for (Object child : node.children) {
+                toArrayRec(state, (Node) child, shift);
+            }
+        }
+    }
     
     @Override
     public E get(int index) {
@@ -1856,7 +1905,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         
         static int mask(int shift) {
-            // TODO: Alternatively: ~(-2 << shift), or just (-2 << shift) for negated mask
             return (1 << shift) - 1;
         }
         
