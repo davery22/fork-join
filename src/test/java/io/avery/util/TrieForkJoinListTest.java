@@ -42,6 +42,10 @@ class TrieForkJoinListTest {
             argumentSet("joinAtIndex6", id(TrieForkJoinListTest::joinAtIndex6)),
             argumentSet("joinAtIndex7", id(TrieForkJoinListTest::joinAtIndex7)),
             argumentSet("joinAtIndex8", id(TrieForkJoinListTest::joinAtIndex8)),
+            argumentSet("addAll1", id(TrieForkJoinListTest::addAll1)),
+            argumentSet("addAll2", id(TrieForkJoinListTest::addAll2)),
+            argumentSet("addAll3", id(TrieForkJoinListTest::addAll3)),
+            argumentSet("addAll4", id(TrieForkJoinListTest::addAll4)),
             argumentSet("subListFork1", id(TrieForkJoinListTest::subListFork1)),
             argumentSet("removeRange1", id(TrieForkJoinListTest::removeRange1)),
             argumentSet("removeRange2", id(TrieForkJoinListTest::removeRange2)),
@@ -191,6 +195,41 @@ class TrieForkJoinListTest {
         ForkJoinList<Integer> list = listOfSize(factory, 10000);
         ForkJoinList<Integer> toInsert = listOfSize(factory, 5000);
         list.join(4200, toInsert);
+        return list;
+    }
+    
+    static ForkJoinList<Integer> addAll1(Factory factory) {
+        // Add empty list
+        ForkJoinList<Integer> list = listOfSize(factory, 10000);
+        List<Integer> toAdd = List.of();
+        list.addAll(toAdd);
+        return list;
+    }
+    
+    static ForkJoinList<Integer> addAll2(Factory factory) {
+        // Add list that fits in tail
+        int size = SPAN*1000 - SPAN/2;
+        ForkJoinList<Integer> list = listOfSize(factory, size);
+        List<Integer> toAdd = IntStream.range(0, SPAN/2).boxed().toList();
+        list.addAll(toAdd);
+        return list;
+    }
+    
+    static ForkJoinList<Integer> addAll3(Factory factory) {
+        // Add large list to full tail
+        int size = SPAN*1000;
+        ForkJoinList<Integer> list = listOfSize(factory, size);
+        List<Integer> toAdd = IntStream.range(0, 1000).boxed().toList();
+        list.addAll(toAdd);
+        return list;
+    }
+    
+    static ForkJoinList<Integer> addAll4(Factory factory) {
+        // Add large list to non-full tail
+        int size = SPAN*1000 - SPAN/2;
+        ForkJoinList<Integer> list = listOfSize(factory, size);
+        List<Integer> toAdd = IntStream.range(0, 1000).boxed().toList();
+        list.addAll(toAdd);
         return list;
     }
     

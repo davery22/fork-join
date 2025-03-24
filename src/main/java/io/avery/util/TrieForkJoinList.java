@@ -131,7 +131,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         tail = toCopy.tail;
     }
     
-    // addAll(collection) - Use collection.toArray()
     // addAll(index, collection) - Use collection.toArray(), or join(index, new [owned] TrieForkJoinList<>(collection)), unless after tailOffset
     // removeAll(collection) - removeRange
     // retainAll(collection) - removeRange
@@ -146,6 +145,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     //  - not to mention 'range' variants
     // -toArray()
     // -toArray(arr)
+    //
+    // -addAll(collection)
     // -get(index)
     // -set(index, element)
     // -add(element)
@@ -184,6 +185,51 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     
     
     @Override
+    public boolean addAll(Collection<? extends E> c) {
+        Object[] arr = c.toArray();
+        int numNew = arr.length;
+        if (numNew == 0) {
+            return false;
+        }
+        int oldTailSize = tailSize, offset = SPAN - oldTailSize;
+        if (numNew <= offset) {
+            Node oldTail = getEditableTail();
+            System.arraycopy(arr, 0, oldTail.children, oldTailSize, numNew);
+            tailSize += numNew;
+            size += numNew;
+            return true;
+        }
+        if (offset != 0) {
+            Node oldTail = getEditableTail();
+            System.arraycopy(arr, 0, oldTail.children, oldTailSize, offset);
+            tailSize += offset;
+            size += offset;
+        }
+        // TODO: Stay at the bottom of the tree and add nodes from there, instead of repeatedly traversing down
+        pushDownTail(false);
+        while (offset + SPAN < numNew) {
+            tailSize = SPAN;
+            size += SPAN;
+            tail = new Node(Arrays.copyOfRange(arr, offset, offset += SPAN));
+            pushDownTail(false);
+        }
+        int remaining = tailSize = numNew - offset;
+        size += remaining;
+        tail = new Node(Arrays.copyOfRange(arr, offset, offset + remaining));
+        return true;
+    }
+    
+//    @Override
+//    public boolean addAll(int index, Collection<? extends E> c) {
+//        rangeCheckForAdd(index);
+//        Object[] arr = c.toArray();
+//        int numNew = arr.length;
+//        if (numNew == 0) {
+//            return false;
+//        }
+//    }
+    
+    @Override
     public Object[] toArray() {
         return toArray(new Object[size]);
     }
@@ -212,7 +258,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         return a;
     }
     
-    static class ToArrayState { Object[] arr; int offset; }
+    private static class ToArrayState { Object[] arr; int offset; }
     private static void toArrayRec(ToArrayState state, Node node, int shift) {
         if (shift == SHIFT) {
             for (Object child : node.children) {
@@ -345,6 +391,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             Node right = splitRoots[1];
             
             // Concat element onto left
+            // TODO: No; append to tail / direct-append
             splitRoots[1] = new Node(new Object[]{ element});
             concatSubTree(splitRoots, rootShifts[0], 0, true);
             assignRoot(splitRoots[0], splitRoots[1], rootShifts[0]);
@@ -1993,6 +2040,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             ParentNode newNode = copy(isOwned, toIndex+1);
             newNode.claim(toIndex);
             newNode.children[toIndex] = newLastChild;
+            // TODO: Not always rightmost - when called by splitRec, we (may) want to retain sizes for later concat...
             return newNode.refreshSizesIfRightmostChildChanged(true, shift); // TODO: Skip straight to Sized if needed (skip intermediate copy)
         }
         
