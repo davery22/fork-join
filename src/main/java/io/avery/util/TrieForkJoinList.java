@@ -187,7 +187,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     
     @Override
     public Iterator<E> iterator() {
-        return new Itr(0);
+        return new ListItr(0);
     }
     
     @Override
@@ -206,21 +206,137 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     }
     
     // TODO: See if this is actually faster than consecutive get(index)
-    private class Itr implements Iterator<E> {
+    private class ListItr implements ListIterator<E> {
         Frame[] stack;
         Frame leaf;
         int cursor;
         int lastRet = -1;
         int expectedModCount = modCount;
+        int stackOwns; // 32-bits, 1-bit per level (except root) assumes at most 33 levels in the tree
         
-        Itr(int index) {
+        ListItr(int index) {
             cursor = index;
             init(index);
+        }
+        
+        final void checkForComodification() {
+            if (modCount != expectedModCount) {
+                throw new ConcurrentModificationException();
+            }
+        }
+        
+        final Node nextLeaf() {
+            assert leaf.offset == leaf.node.children.length;
+            assert cursor < tailOffset();
+            
+            int i = 0;
+            Frame parent = stack[i];
+            while (parent.offset == parent.node.children.length-1) {
+                parent = stack[++i];
+            }
+            parent.offset++;
+            int owns = stackOwns >>> (i+1);
+            boolean owned = (owns & 1) != 0;
+            while (i > 0) {
+                owned = owned && ((ParentNode) parent.node).owns(parent.offset);
+                owns = (owns << 1) | (owned ? 1 : 0);
+                Frame child = stack[--i];
+                child.node = (Node) parent.node.children[parent.offset];
+                child.offset = 0;
+                parent = child;
+            }
+            owned = owned && ((ParentNode) parent.node).owns(parent.offset);
+            stackOwns = (owns << 1) | (owned ? 1 : 0);
+            leaf.offset = 0;
+            return leaf.node = (Node) parent.node.children[parent.offset];
+        }
+        
+        final Node prevLeaf() {
+            assert leaf.offset == 0;
+            assert cursor > 0;
+            
+            int i = 0;
+            Frame parent = stack[i];
+            while (parent.offset == 0) {
+                parent = stack[++i];
+            }
+            parent.offset--;
+            int owns = stackOwns >>> (i+1);
+            boolean owned = (owns & 1) != 0;
+            while (i > 0) {
+                owned = owned && ((ParentNode) parent.node).owns(parent.offset);
+                owns = (owns << 1) | (owned ? 1 : 0);
+                Frame child = stack[--i];
+                child.node = (Node) parent.node.children[parent.offset];
+                child.offset = child.node.children.length-1;
+                parent = child;
+            }
+            owned = owned && ((ParentNode) parent.node).owns(parent.offset);
+            stackOwns = (owns << 1) | (owned ? 1 : 0);
+            leaf.node = (Node) parent.node.children[parent.offset];
+            leaf.offset = leaf.node.children.length;
+            return leaf.node;
+        }
+        
+        final void init(int index) {
+            int tailOffset = tailOffset();
+            if (index >= tailOffset) {
+                leaf = new Frame(tail, index - tailOffset);
+            }
+            else if (rootShift == 0) {
+                leaf = new Frame(root, index);
+            }
+            else {
+                initStack(index);
+            }
+        }
+        
+        final void initStack(int index) {
+            assert rootShift > 0;
+            
+            Node curr = root;
+            int shift = rootShift, owns = -1;
+            boolean owned = ownsRoot();
+            stack = new Frame[shift / SHIFT];
+            
+            for (int i = stack.length-1; i >= 0; i--, shift -= SHIFT) {
+                int childIdx = (index >>> shift) & MASK;
+                if (curr instanceof SizedParentNode sn) {
+                    Sizes sizes = sn.sizes();
+                    while (sizes.get(childIdx) <= index) {
+                        childIdx++;
+                    }
+                    if (childIdx != 0) {
+                        index -= sizes.get(childIdx-1);
+                    }
+                }
+                owned = owned && ((ParentNode) curr).owns(childIdx);
+                owns = (owns << 1) | (owned ? 1 : 0);
+                stack[i] = new Frame(curr, childIdx);
+                curr = (Node) curr.children[childIdx];
+            }
+            stackOwns = owns;
+            leaf = new Frame(curr, index & MASK);
         }
         
         @Override
         public boolean hasNext() {
             return cursor != size;
+        }
+        
+        @Override
+        public boolean hasPrevious() {
+            return cursor != 0;
+        }
+        
+        @Override
+        public int nextIndex() {
+            return cursor;
+        }
+        
+        @Override
+        public int previousIndex() {
+            return cursor - 1;
         }
         
         @Override
@@ -252,9 +368,32 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         
         @Override
-        public void remove() {
-            // TODO
-            Iterator.super.remove();
+        public E previous() {
+            checkForComodification();
+            int i = cursor - 1;
+            if (i < 0) {
+                throw new NoSuchElementException();
+            }
+            Node leafNode = leaf.node;
+            if (leaf.offset == 0) {
+                if (rootShift == 0) {
+                    leafNode = leaf.node = root;
+                    leaf.offset = i+1;
+                }
+                else if (stack == null) {
+                    initStack(i);
+                    leafNode = leaf.node;
+                    leaf.offset++;
+                }
+                else {
+                    leafNode = prevLeaf();
+                }
+            }
+            lastRet = i;
+            cursor = i;
+            @SuppressWarnings("unchecked")
+            E value = (E) leafNode.children[--leaf.offset];
+            return value;
         }
         
         @Override
@@ -289,149 +428,48 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             checkForComodification();
         }
         
-        final void checkForComodification() {
-            if (modCount != expectedModCount) {
-                throw new ConcurrentModificationException();
-            }
-        }
-        
-        final Node nextLeaf() {
-            assert leaf.offset == leaf.node.children.length;
-            assert cursor < tailOffset();
-            
-            int i = 0;
-            Frame parent = stack[i];
-            while (parent.offset == parent.node.children.length-1) {
-                parent = stack[++i];
-            }
-            parent.offset++;
-            while (i > 0) {
-                Frame child = stack[--i];
-                child.node = (Node) parent.node.children[parent.offset];
-                child.offset = 0;
-                parent = child;
-            }
-            leaf.offset = 0;
-            return leaf.node = (Node) parent.node.children[parent.offset];
-        }
-        
-        final Node prevLeaf() {
-            assert leaf.offset == 0;
-            assert cursor > 0;
-            
-            int i = 0;
-            Frame parent = stack[i];
-            while (parent.offset == 0) {
-                parent = stack[++i];
-            }
-            parent.offset--;
-            while (i > 0) {
-                Frame child = stack[--i];
-                child.node = (Node) parent.node.children[parent.offset];
-                child.offset = child.node.children.length-1;
-                parent = child;
-            }
-            leaf.node = (Node) parent.node.children[parent.offset];
-            leaf.offset = leaf.node.children.length;
-            return leaf.node;
-        }
-        
-        final void init(int index) {
-            int tailOffset = tailOffset();
-            if (index >= tailOffset) {
-                leaf = new Frame(tail, index - tailOffset);
-            }
-            else if (rootShift == 0) {
-                leaf = new Frame(root, index);
-            }
-            else {
-                initStack(index);
-            }
-        }
-        
-        final void initStack(int index) {
-            assert rootShift > 0;
-            
-            Node curr = root;
-            int shift = rootShift;
-            stack = new Frame[shift / SHIFT];
-            
-            for (int i = stack.length-1; i >= 0; i--, shift -= SHIFT) {
-                int childIdx = (index >>> shift) & MASK;
-                if (curr instanceof SizedParentNode sn) {
-                    Sizes sizes = sn.sizes();
-                    while (sizes.get(childIdx) <= index) {
-                        childIdx++;
-                    }
-                    if (childIdx != 0) {
-                        index -= sizes.get(childIdx-1);
-                    }
-                }
-                stack[i] = new Frame(curr, childIdx);
-                curr = (Node) curr.children[childIdx];
-            }
-            leaf = new Frame(curr, index & MASK);
-        }
-    }
-    
-    private class ListItr extends Itr implements ListIterator<E> {
-        
-        ListItr(int index) {
-            super(index);
-        }
-        
-        @Override
-        public boolean hasPrevious() {
-            return cursor != 0;
-        }
-        
-        @Override
-        public int nextIndex() {
-            return cursor;
-        }
-        
-        @Override
-        public int previousIndex() {
-            return cursor - 1;
-        }
-        
-        @Override
-        public E previous() {
-            checkForComodification();
-            int i = cursor - 1;
-            if (i < 0) {
-                throw new NoSuchElementException();
-            }
-            Node leafNode = leaf.node;
-            if (leaf.offset == 0) {
-                if (rootShift == 0) {
-                    leafNode = leaf.node = root;
-                    leaf.offset = i+1;
-                }
-                else if (stack == null) {
-                    initStack(i);
-                    leafNode = leaf.node;
-                    leaf.offset++;
-                }
-                else {
-                    leafNode = prevLeaf();
-                }
-            }
-            lastRet = i;
-            cursor = i;
-            @SuppressWarnings("unchecked")
-            E value = (E) leafNode.children[--leaf.offset];
-            return value;
-        }
-        
         @Override
         public void set(E e) {
+            int i = lastRet;
+            if (i < 0)
+                throw new IllegalStateException();
+            int adj = i < cursor ? -1 : 0;
+            if (i >= tailOffset()) {
+                Node node = leaf.node = getEditableTail();
+                node.children[leaf.offset + adj] = e;
+                return;
+            }
+            if (rootShift == 0) {
+                Node node = leaf.node = getEditableRoot();
+                node.children[leaf.offset + adj] = e;
+                return;
+            }
+            int j;
+            if (!ownsRoot()) {
+                stack[j = stack.length-1].node = getEditableRoot();
+                for (; j > 0; j--) {
+                    stack[j-1].node = stack[j].node.getEditableChild(stack[j].offset);
+                }
+                leaf.node = stack[0].node.getEditableChild(stack[0].offset);
+            }
+            else if ((j = Integer.numberOfTrailingZeros(stackOwns)) != 0) {
+                while (--j > 0) {
+                    stack[j-1].node = stack[j].node.getEditableChild(stack[j].offset);
+                }
+                leaf.node = stack[0].node.getEditableChild(stack[0].offset);
+            }
+            stackOwns = -1; // All 1's, ie we own the whole stack now
+            leaf.node.children[leaf.offset + adj] = e;
+        }
+        
+        @Override
+        public void add(E e) {
             // TODO
             throw new UnsupportedOperationException();
         }
         
         @Override
-        public void add(E e) {
+        public void remove() {
             // TODO
             throw new UnsupportedOperationException();
         }
