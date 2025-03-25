@@ -2,6 +2,7 @@ package io.avery.util;
 
 import java.lang.reflect.Array;
 import java.util.*;
+import java.util.function.Consumer;
 
 // TODO: Implement RandomAccess?
 // TODO: can rootShift get too big? (ie shift off the entire index -> 0, making later elements unreachable)
@@ -185,6 +186,258 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     
     
     @Override
+    public Iterator<E> iterator() {
+        return new Itr(0);
+    }
+    
+    @Override
+    public ListIterator<E> listIterator() {
+        return new ListItr(0);
+    }
+    
+    @Override
+    public ListIterator<E> listIterator(int index) {
+        return new ListItr(index);
+    }
+    
+    static class Frame {
+        Node node; int offset;
+        Frame(Node node, int offset) { this.node = node; this.offset = offset; }
+    }
+    
+    // TODO: See if this is actually faster than consecutive get(index)
+    private class Itr implements Iterator<E> {
+        Frame[] stack;
+        Frame leaf;
+        int cursor;
+        int lastRet = -1;
+        int expectedModCount = modCount;
+        
+        Itr(int index) {
+            cursor = index;
+            init(index);
+        }
+        
+        @Override
+        public boolean hasNext() {
+            return cursor != size;
+        }
+        
+        @Override
+        public E next() {
+            checkForComodification();
+            int i = cursor;
+            if (i >= size) {
+                throw new NoSuchElementException();
+            }
+            Node leafNode = leaf.node;
+            if (leaf.offset == leafNode.children.length) {
+                if (i == tailOffset()) {
+                    if (stack != null) {
+                        // Fixup in case we iterate backwards later
+                        stack[0].offset++;
+                    }
+                    leaf.offset = 0;
+                    leafNode = leaf.node = tail;
+                }
+                else {
+                    leafNode = nextLeaf();
+                }
+            }
+            lastRet = i;
+            cursor = i + 1;
+            @SuppressWarnings("unchecked")
+            E value = (E) leafNode.children[leaf.offset++];
+            return value;
+        }
+        
+        @Override
+        public void remove() {
+            // TODO
+            Iterator.super.remove();
+        }
+        
+        @Override
+        public void forEachRemaining(Consumer<? super E> action) {
+            Objects.requireNonNull(action);
+            int size = TrieForkJoinList.this.size;
+            int i = cursor;
+            if (i >= size) {
+                return;
+            }
+            
+            int tailOffset = tailOffset();
+            Node leafNode = leaf.node;
+            for (; i < size && modCount == expectedModCount; i++) {
+                if (leaf.offset == leafNode.children.length) {
+                    if (i == tailOffset) {
+                        leaf.offset = 0;
+                        leafNode = leaf.node = tail;
+                    }
+                    else {
+                        leafNode = nextLeaf();
+                    }
+                }
+                @SuppressWarnings("unchecked")
+                E value = (E) leafNode.children[leaf.offset++];
+                action.accept(value);
+            }
+            
+            // Update once at end to reduce heap write traffic.
+            cursor = i;
+            lastRet = i - 1;
+            checkForComodification();
+        }
+        
+        final void checkForComodification() {
+            if (modCount != expectedModCount) {
+                throw new ConcurrentModificationException();
+            }
+        }
+        
+        final Node nextLeaf() {
+            assert leaf.offset == leaf.node.children.length;
+            assert cursor < tailOffset();
+            
+            int i = 0;
+            Frame parent = stack[i];
+            while (parent.offset == parent.node.children.length-1) {
+                parent = stack[++i];
+            }
+            parent.offset++;
+            while (i > 0) {
+                Frame child = stack[--i];
+                child.node = (Node) parent.node.children[parent.offset];
+                child.offset = 0;
+                parent = child;
+            }
+            leaf.offset = 0;
+            return leaf.node = (Node) parent.node.children[parent.offset];
+        }
+        
+        final Node prevLeaf() {
+            assert leaf.offset == 0;
+            assert cursor > 0;
+            
+            int i = 0;
+            Frame parent = stack[i];
+            while (parent.offset == 0) {
+                parent = stack[++i];
+            }
+            parent.offset--;
+            while (i > 0) {
+                Frame child = stack[--i];
+                child.node = (Node) parent.node.children[parent.offset];
+                child.offset = child.node.children.length-1;
+                parent = child;
+            }
+            leaf.node = (Node) parent.node.children[parent.offset];
+            leaf.offset = leaf.node.children.length;
+            return leaf.node;
+        }
+        
+        final void init(int index) {
+            int tailOffset = tailOffset();
+            if (index >= tailOffset) {
+                leaf = new Frame(tail, index - tailOffset);
+            }
+            else if (rootShift == 0) {
+                leaf = new Frame(root, index);
+            }
+            else {
+                initStack(index);
+            }
+        }
+        
+        final void initStack(int index) {
+            assert rootShift > 0;
+            
+            Node curr = root;
+            int shift = rootShift;
+            stack = new Frame[shift / SHIFT];
+            
+            for (int i = stack.length-1; i >= 0; i--, shift -= SHIFT) {
+                int childIdx = (index >>> shift) & MASK;
+                if (curr instanceof SizedParentNode sn) {
+                    Sizes sizes = sn.sizes();
+                    while (sizes.get(childIdx) <= index) {
+                        childIdx++;
+                    }
+                    if (childIdx != 0) {
+                        index -= sizes.get(childIdx-1);
+                    }
+                }
+                stack[i] = new Frame(curr, childIdx);
+                curr = (Node) curr.children[childIdx];
+            }
+            leaf = new Frame(curr, index & MASK);
+        }
+    }
+    
+    private class ListItr extends Itr implements ListIterator<E> {
+        
+        ListItr(int index) {
+            super(index);
+        }
+        
+        @Override
+        public boolean hasPrevious() {
+            return cursor != 0;
+        }
+        
+        @Override
+        public int nextIndex() {
+            return cursor;
+        }
+        
+        @Override
+        public int previousIndex() {
+            return cursor - 1;
+        }
+        
+        @Override
+        public E previous() {
+            checkForComodification();
+            int i = cursor - 1;
+            if (i < 0) {
+                throw new NoSuchElementException();
+            }
+            Node leafNode = leaf.node;
+            if (leaf.offset == 0) {
+                if (rootShift == 0) {
+                    leafNode = leaf.node = root;
+                    leaf.offset = i+1;
+                }
+                else if (stack == null) {
+                    initStack(i);
+                    leafNode = leaf.node;
+                    leaf.offset++;
+                }
+                else {
+                    leafNode = prevLeaf();
+                }
+            }
+            lastRet = i;
+            cursor = i;
+            @SuppressWarnings("unchecked")
+            E value = (E) leafNode.children[--leaf.offset];
+            return value;
+        }
+        
+        @Override
+        public void set(E e) {
+            // TODO
+            throw new UnsupportedOperationException();
+        }
+        
+        @Override
+        public void add(E e) {
+            // TODO
+            throw new UnsupportedOperationException();
+        }
+    }
+    
+    @Override
     public boolean addAll(Collection<? extends E> c) {
         Object[] arr = c.toArray();
         int numNew = arr.length;
@@ -288,7 +541,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         else {
             leaf = root;
             for (int shift = rootShift; shift > 0; shift -= SHIFT) {
-                int childIdx = index >>> shift;
+                int childIdx = (index >>> shift) & MASK;
                 if (leaf instanceof SizedParentNode sn) {
                     Sizes sizes = sn.sizes();
                     while (sizes.get(childIdx) <= index) {
@@ -298,7 +551,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                         index -= sizes.get(childIdx-1);
                     }
                 }
-                leaf = (Node) leaf.children[childIdx & MASK];
+                leaf = (Node) leaf.children[childIdx];
             }
             index &= MASK;
         }
@@ -322,7 +575,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         else {
             leaf = getEditableRoot();
             for (int shift = rootShift; shift > 0; shift -= SHIFT) {
-                int childIdx = index >>> shift;
+                int childIdx = (index >>> shift) & MASK;
                 if (leaf instanceof SizedParentNode sn) {
                     Sizes sizes = sn.sizes();
                     while (sizes.get(childIdx) <= index) {
@@ -332,7 +585,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                         index -= sizes.get(childIdx-1);
                     }
                 }
-                leaf = leaf.getEditableChild(childIdx & MASK);
+                leaf = leaf.getEditableChild(childIdx);
             }
             index &= MASK;
         }
@@ -733,7 +986,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             }
             
             // Starts in the root, ends at or in the tail
-            root = forkPrefixRec(fromIndex, this, getEditableRoot(), rootShift, true, true);
+            root = forkPrefixRec(fromIndex-1, this, getEditableRoot(), rootShift, true, true);
             if (toIndex != tailOffset) {
                 Node newTail = getEditableTail();
                 int oldTailSize = tailSize, tailIdx = toIndex - tailOffset;
