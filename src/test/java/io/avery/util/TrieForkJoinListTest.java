@@ -64,7 +64,9 @@ class TrieForkJoinListTest {
             argumentSet("iterator3", id(TrieForkJoinListTest::iterator3)),
             argumentSet("iterator4", id(TrieForkJoinListTest::iterator4)),
             argumentSet("iterator5", id(TrieForkJoinListTest::iterator5)),
-            argumentSet("iterator6", id(TrieForkJoinListTest::iterator6))
+            argumentSet("iterator6", id(TrieForkJoinListTest::iterator6)),
+            argumentSet("iterator7", id(TrieForkJoinListTest::iterator7)),
+            argumentSet("iterator8", id(TrieForkJoinListTest::iterator8))
         );
 //        ),
 //        IntStream.rangeClosed(1, 100)
@@ -354,7 +356,7 @@ class TrieForkJoinListTest {
     
     static ForkJoinList<Integer> iterator1(Factory factory) {
         // Iterate front-to-back then back-to-front, twice
-        ForkJoinList<Integer> list = listOfSize(factory, 1000).fork();
+        ForkJoinList<Integer> list = listOfSize(factory, 10000).fork();
         ListIterator<Integer> iter = list.listIterator();
         ForkJoinList<Integer> result = factory.get();
         for (int i = 0; i < 2; i++) {
@@ -366,19 +368,19 @@ class TrieForkJoinListTest {
     
     static ForkJoinList<Integer> iterator2(Factory factory) {
         // Iterate back-to-front then front-to-back, twice
-        ForkJoinList<Integer> list = listOfSize(factory, 1000).fork();
-        ListIterator<Integer> iter = list.listIterator(1000);
+        ForkJoinList<Integer> list = listOfSize(factory, 10000).fork();
+        ListIterator<Integer> iter = list.listIterator(list.size());
         ForkJoinList<Integer> result = factory.get();
         for (int i = 0; i < 2; i++) {
-            iterSetForward(iter, result);
             iterSetBackward(iter, result);
+            iterSetForward(iter, result);
         }
         return result;
     }
     
     static ForkJoinList<Integer> iterator3(Factory factory) {
         // Iterate front-to-back then back-to-front, twice (starting at tailOffset)
-        int size = SPAN*100;
+        int size = SPAN*1000;
         ForkJoinList<Integer> list = listOfSize(factory, size).fork();
         ListIterator<Integer> iter = list.listIterator(size-SPAN);
         ForkJoinList<Integer> result = factory.get();
@@ -391,21 +393,22 @@ class TrieForkJoinListTest {
     
     static ForkJoinList<Integer> iterator4(Factory factory) {
         // Iterate back-to-front then front-to-back, twice (starting at tailOffset)
-        int size = SPAN*100;
+        int size = SPAN*1000;
         ForkJoinList<Integer> list = listOfSize(factory, size).fork();
         ListIterator<Integer> iter = list.listIterator(size-SPAN);
         ForkJoinList<Integer> result = factory.get();
         for (int i = 0; i < 2; i++) {
-            iterSetForward(iter, result);
             iterSetBackward(iter, result);
+            iterSetForward(iter, result);
         }
         return result;
     }
     
     static ForkJoinList<Integer> iterator5(Factory factory) {
         // Iterate front-to-back then back-to-front, twice (rootShift = 0, non-full root)
-        ForkJoinList<Integer> list = listOfSize(factory, SPAN + SPAN).fork();
+        ForkJoinList<Integer> list = listOfSize(factory, SPAN + SPAN);
         list.subList(SPAN/2, SPAN).clear();
+        list = list.fork();
         ListIterator<Integer> iter = list.listIterator();
         ForkJoinList<Integer> result = factory.get();
         for (int i = 0; i < 2; i++) {
@@ -417,13 +420,42 @@ class TrieForkJoinListTest {
     
     static ForkJoinList<Integer> iterator6(Factory factory) {
         // Iterate back-to-front then front-to-back, twice (rootShift = 0, non-full root)
-        ForkJoinList<Integer> list = listOfSize(factory, SPAN + SPAN).fork();
+        ForkJoinList<Integer> list = listOfSize(factory, SPAN + SPAN);
         list.subList(SPAN/2, SPAN).clear();
-        ListIterator<Integer> iter = list.listIterator();
+        list = list.fork();
+        ListIterator<Integer> iter = list.listIterator(list.size());
+        ForkJoinList<Integer> result = factory.get();
+        for (int i = 0; i < 2; i++) {
+            iterSetBackward(iter, result);
+            iterSetForward(iter, result);
+        }
+        return result;
+    }
+    
+    static ForkJoinList<Integer> iterator7(Factory factory) {
+        // Iterate front-to-back then back-to-front, twice (rootShift = 0, non-full root, starting at tailOffset)
+        ForkJoinList<Integer> list = listOfSize(factory, SPAN + SPAN);
+        list.subList(SPAN/2, SPAN).clear();
+        list = list.fork();
+        ListIterator<Integer> iter = list.listIterator(SPAN/2);
         ForkJoinList<Integer> result = factory.get();
         for (int i = 0; i < 2; i++) {
             iterSetForward(iter, result);
             iterSetBackward(iter, result);
+        }
+        return result;
+    }
+    
+    static ForkJoinList<Integer> iterator8(Factory factory) {
+        // Iterate back-to-front then front-to-back, twice (rootShift = 0, non-full root, starting at tailOffset)
+        ForkJoinList<Integer> list = listOfSize(factory, SPAN + SPAN);
+        list.subList(SPAN/2, SPAN).clear();
+        list = list.fork();
+        ListIterator<Integer> iter = list.listIterator(SPAN/2);
+        ForkJoinList<Integer> result = factory.get();
+        for (int i = 0; i < 2; i++) {
+            iterSetBackward(iter, result);
+            iterSetForward(iter, result);
         }
         return result;
     }

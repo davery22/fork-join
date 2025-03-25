@@ -212,7 +212,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         int cursor;
         int lastRet = -1;
         int expectedModCount = modCount;
-        int stackOwns; // 32-bits, 1-bit per level (except root) assumes at most 33 levels in the tree
+        int deepestOwned = -1; // Index of deepest owned parent node in the stack, or -1 if all nodes (including leaf) are owned
         
         ListItr(int index) {
             cursor = index;
@@ -235,18 +235,18 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 parent = stack[++i];
             }
             parent.offset++;
-            int owns = stackOwns >>> (i+1);
-            boolean owned = (owns & 1) != 0;
+            boolean owned = deepestOwned <= i;
+            int newDeepestOwned = owned ? i : deepestOwned;
             while (i > 0) {
-                owned = owned && ((ParentNode) parent.node).owns(parent.offset);
-                owns = (owns << 1) | (owned ? 1 : 0);
+                if (owned && (owned = ((ParentNode) parent.node).owns(parent.offset))) {
+                    newDeepestOwned--;
+                }
                 Frame child = stack[--i];
                 child.node = (Node) parent.node.children[parent.offset];
                 child.offset = 0;
                 parent = child;
             }
-            owned = owned && ((ParentNode) parent.node).owns(parent.offset);
-            stackOwns = (owns << 1) | (owned ? 1 : 0);
+            deepestOwned = (owned && ((ParentNode) parent.node).owns(parent.offset)) ? newDeepestOwned-1 : newDeepestOwned;
             leaf.offset = 0;
             return leaf.node = (Node) parent.node.children[parent.offset];
         }
@@ -261,18 +261,18 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 parent = stack[++i];
             }
             parent.offset--;
-            int owns = stackOwns >>> (i+1);
-            boolean owned = (owns & 1) != 0;
+            boolean owned = deepestOwned <= i;
+            int newDeepestOwned = owned ? i : deepestOwned;
             while (i > 0) {
-                owned = owned && ((ParentNode) parent.node).owns(parent.offset);
-                owns = (owns << 1) | (owned ? 1 : 0);
+                if (owned && (owned = ((ParentNode) parent.node).owns(parent.offset))) {
+                    newDeepestOwned--;
+                }
                 Frame child = stack[--i];
                 child.node = (Node) parent.node.children[parent.offset];
                 child.offset = child.node.children.length-1;
                 parent = child;
             }
-            owned = owned && ((ParentNode) parent.node).owns(parent.offset);
-            stackOwns = (owns << 1) | (owned ? 1 : 0);
+            deepestOwned = (owned && ((ParentNode) parent.node).owns(parent.offset)) ? newDeepestOwned-1 : newDeepestOwned;
             leaf.node = (Node) parent.node.children[parent.offset];
             leaf.offset = leaf.node.children.length;
             return leaf.node;
@@ -294,9 +294,9 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         final void initStack(int index) {
             assert rootShift > 0;
             
-            Node curr = root;
-            int shift = rootShift, owns = -1;
             boolean owned = ownsRoot();
+            Node curr = root;
+            int shift = rootShift, initDeepestOwned = shift / SHIFT - 1;
             stack = new Frame[shift / SHIFT];
             
             for (int i = stack.length-1; i >= 0; i--, shift -= SHIFT) {
@@ -310,12 +310,13 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                         index -= sizes.get(childIdx-1);
                     }
                 }
-                owned = owned && ((ParentNode) curr).owns(childIdx);
-                owns = (owns << 1) | (owned ? 1 : 0);
+                if (owned && (owned = ((ParentNode) curr).owns(childIdx))) {
+                    initDeepestOwned--;
+                }
                 stack[i] = new Frame(curr, childIdx);
                 curr = (Node) curr.children[childIdx];
             }
-            stackOwns = owns;
+            deepestOwned = initDeepestOwned;
             leaf = new Frame(curr, index & MASK);
         }
         
@@ -431,34 +432,38 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         @Override
         public void set(E e) {
             int i = lastRet;
-            if (i < 0)
+            if (i < 0) {
                 throw new IllegalStateException();
-            int adj = i < cursor ? -1 : 0;
+            }
+            checkForComodification();
+            expectedModCount = ++modCount;
+            int adj = i < cursor ? -1 : 0; // If lastRet < cursor (ie we were traversing forward), need to sub 1 from leaf offset
             if (i >= tailOffset()) {
-                Node node = leaf.node = getEditableTail();
-                node.children[leaf.offset + adj] = e;
+                (leaf.node = getEditableTail()).children[leaf.offset + adj] = e;
                 return;
             }
-            if (rootShift == 0) {
-                Node node = leaf.node = getEditableRoot();
-                node.children[leaf.offset + adj] = e;
-                return;
-            }
-            int j;
-            if (!ownsRoot()) {
-                stack[j = stack.length-1].node = getEditableRoot();
+            // At this point, deepestOwned may be at most stack.length-1, indicating we always own root at least, which
+            // is of course a lie. But we don't trust that value anyway, because the list may have been forked outside
+            // this iterator, and deepestOwned wouldn't know that the root is no longer owned. So, we first check if the
+            // root is owned (if not, we refresh the whole stack), and only then do we trust deepestOwned.
+            stackCopying: {
+                int j;
+                if (!ownsRoot()) {
+                    if (stack == null) { // implies rootShift == 0
+                        (leaf.node = getEditableRoot()).children[leaf.offset + adj] = e;
+                        return;
+                    }
+                    stack[j = stack.length-1].node = getEditableRoot();
+                }
+                else if ((j = deepestOwned) == -1) {
+                    break stackCopying;
+                }
                 for (; j > 0; j--) {
                     stack[j-1].node = stack[j].node.getEditableChild(stack[j].offset);
                 }
                 leaf.node = stack[0].node.getEditableChild(stack[0].offset);
+                deepestOwned = -1;
             }
-            else if ((j = Integer.numberOfTrailingZeros(stackOwns)) != 0) {
-                while (--j > 0) {
-                    stack[j-1].node = stack[j].node.getEditableChild(stack[j].offset);
-                }
-                leaf.node = stack[0].node.getEditableChild(stack[0].offset);
-            }
-            stackOwns = -1; // All 1's, ie we own the whole stack now
             leaf.node.children[leaf.offset + adj] = e;
         }
         
