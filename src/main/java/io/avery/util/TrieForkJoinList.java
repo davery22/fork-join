@@ -3,6 +3,7 @@ package io.avery.util;
 import java.lang.reflect.Array;
 import java.util.*;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 
 // TODO: Implement RandomAccess?
 // TODO: can rootShift get too big? (ie shift off the entire index -> 0, making later elements unreachable)
@@ -121,7 +122,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     
     public TrieForkJoinList(Collection<? extends E> c) {
         this();
-        addAll(c); // TODO: Avoid copying - we know we are not aliased
+        addAll(c);
     }
     
     protected TrieForkJoinList(TrieForkJoinList<? extends E> toCopy) {
@@ -133,12 +134,9 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     }
     
     // addAll(index, collection) - Use collection.toArray(), or join(index, new [owned] TrieForkJoinList<>(collection)), unless after tailOffset
-    // removeAll(collection) - removeRange
-    // retainAll(collection) - removeRange
-    // removeIf(predicate) - bitset + listIterator + removeRange
-    // iterator()
-    // listIterator()
     // listIterator(index)
+    //  add(element)
+    //  remove()
     // subList(from, to)
     // spliterator()
     
@@ -147,6 +145,11 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     // -toArray()
     // -toArray(arr)
     //
+    // -removeIf(predicate)
+    // -removeAll(collection)
+    // -retainAll(collection)
+    // -iterator()
+    // -listIterator()
     // -addAll(collection)
     // -get(index)
     // -set(index, element)
@@ -183,6 +186,27 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     // -forEach(action) - Iterable
     // -stream() - Collection
     // -parallelStream() - Collection
+    
+    
+    // set(i, el) must be a co-mod IF it actually copies
+    //  - it can lose concurrent updates happening at a different location
+    //    (eg 2 threads are trying to set under a shared root, both copy root, one wins)
+    // fork() should be safe
+    //  - if fork races a mutation,
+    //    - if the mutation does any copying, it should increment the modCount
+    //    - else the mutation got there first (and fork disowned after)
+    //    - with multiple levels, what matters is whether fork got to a given node last (node ends up disowned)
+    //    - if fork got there first, mutation may still see owned, and races to update 'shared' nodes, which may be
+    //      visible to forked list. This may lead to corruption / non-CME exceptions as data read by forked list changes
+    //      out from under it (eg node sizes...).
+    //
+    // Pros of custom iterator:
+    //  - faster iteration - no need to traverse down on each advance
+    //  - faster set - no need to traverse down each time
+    //  - potentially faster add/remove, if we can sometimes bypass rebalancing
+    // Cons of custom iterator:
+    //  - sublist forking needs to be a co-mod to avoid silently invalidating iterator stacks
+    //  - iterator retains a strong reference to root (even after external co-mod), preventing GC
     
     
     @Override
@@ -431,12 +455,19 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         
         @Override
         public void set(E e) {
-            int i = lastRet;
-            if (i < 0) {
+            if (lastRet < 0) {
                 throw new IllegalStateException();
             }
             checkForComodification();
             expectedModCount = ++modCount;
+            unsafeSet(e);
+        }
+        
+        // Used by removeIf() and batchRemove(). This method skips checks and does not update modCount.
+        private void unsafeSet(E e) {
+            assert lastRet >= 0;
+            
+            int i = lastRet;
             int adj = i < cursor ? -1 : 0; // If lastRet < cursor (ie we were traversing forward), need to sub 1 from leaf offset
             if (i >= tailOffset()) {
                 (leaf.node = getEditableTail()).children[leaf.offset + adj] = e;
@@ -444,8 +475,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             }
             // At this point, deepestOwned may be at most stack.length-1, indicating we always own root at least, which
             // is of course a lie. But we don't trust that value anyway, because the list may have been forked outside
-            // this iterator, and deepestOwned wouldn't know that the root is no longer owned. So, we first check if the
-            // root is owned (if not, we refresh the whole stack), and only then do we trust deepestOwned.
+            // this iterator, and deepestOwned wouldn't know that the root is no longer owned. So, we first check that
+            // the root is owned (if not, we refresh the whole stack), and only then do we trust deepestOwned.
             stackCopying: {
                 int j;
                 if (!ownsRoot()) {
@@ -469,13 +500,25 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         
         @Override
         public void add(E e) {
-            // TODO
+            // TODO: Implement a variant of add that does not need to rebalance every time
+            //  This inserts before the next() element, shifting cursor and subsequent elements right
+            //  If the current leaf is not full, we can use that
+            //  Else if we are in the tail, shift the last element to a new tail, and push-down old tail (with us in it)
+            //  Else we are in a full leaf in the root.
+            //    Adding will shift us right and shift an element off the right end
+            //      This is the only time we could become unbalanced, because we introduce a new node.
+            //      However, if the parent level's children count stays within MARGIN of optimal, we're fine.
+            //      If we ensure it is within MARGIN-1 of optimal before adding a new node, we don't have to worry again (at this level...).
+            //    Want to somehow equate this to splitting plus direct-appending left
+            //      But that strategy can bulk-insert with only one rebalance, vs
+            //      here we do not know when we are 'done', so must ensure balance after each step
             throw new UnsupportedOperationException();
         }
         
         @Override
         public void remove() {
-            // TODO
+            // TODO: Implement a variant of remove that does not need to rebalance every time
+            //  This works on the last returned element - cannot be called consecutively, or after add
             throw new UnsupportedOperationException();
         }
     }
@@ -524,6 +567,42 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
 //            return false;
 //        }
 //    }
+    
+    // TODO: Okay, we have 4 versions of add() to write:
+    //  1. add(idx, e)
+    //     - direct append onto left split
+    //  2. addAll(coll)
+    //     - after initial tail push-down, stay at the bottom of the tree and append full nodes
+    //  3. addAll(idx, coll)
+    //     - during or after split, direct append to fill rightmost leaf of left split, then
+    //       stay at the bottom of the tree and append full nodes
+    //  4. ListIterator.add(e)
+    //     - described elsewhere; need to minimize rebalancing
+    
+    // TODO: Fixup sizes on left when splitting?
+    //  Concatenate expects left's right-edge to be Sized (or full), so that during rebalancing / children-shifting, can
+    //  assume left's children are full if it is not-Sized. This avoids a trip down the tree (at each level) to verify
+    //  fullness / calculate size. ALSO, in the case that rebalancing is avoided (but there is still a right side),
+    //  concatenate still needs to Size left's right edge starting at the level above the node with incomplete children.
+    //  .
+    //  Even if we moved this Sized-forcing to happen in concatenate (instead of tail push-down), that would be enough
+    //  to ensure split doesn't have to force Sizes on left's right-edge, which is especially good for insertion ops,
+    //  as they direct append to left's right-edge, changing the right-edge that concatenate sees.
+    //  .
+    //  Ideally, we would go further to only force Sized if needed.
+    //  As we come up from concat, we can know if left's rightmost child (from deeper level recursion) is full or not,
+    //  and we know if it is in position SPAN-1, and we know if it is rightmost (right is empty).
+    //  If rightmost child is (!rightmost and (!full or !last)), then left must become Sized.
+    //  Unfortunately, if we do this before rebalancing at this level, it might be a wasted effort.
+    //  But if we rebalance first, the position and children of left's (former) rightmost child may have changed.
+    //  But we could track this - just need to indicate when we are emptying that child, or emptying into that child
+    //  (the first time).
+    //  .
+    //  - add 1
+    //  - add N
+    //  - remove 1
+    //  - remove N
+    
     
     @Override
     public Object[] toArray() {
@@ -998,6 +1077,108 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         // Disown root/tail, to force path-copying upon future mutations
         owns = 0;
         return new TrieForkJoinList<>(this);
+    }
+    
+    // A tiny bit set implementation
+    
+    private static long[] nBits(int n) {
+        return new long[((n - 1) >> 6) + 1];
+    }
+    private static void setBit(long[] bits, int i) {
+        bits[i >> 6] |= 1L << i;
+    }
+    private static boolean isClear(long[] bits, int i) {
+        return (bits[i >> 6] & (1L << i)) == 0;
+    }
+    
+    @Override
+    public boolean removeIf(Predicate<? super E> filter) {
+        return removeIf(filter, 0, size);
+    }
+    
+    boolean removeIf(Predicate<? super E> filter, int i, int end) {
+        Objects.requireNonNull(filter);
+        int expectedModCount = modCount;
+        ListItr right = new ListItr(i);
+        // Optimize for initial run of survivors
+        while (i < end && !filter.test(right.next())) {
+            i++;
+        }
+        // Tolerate predicates that reentrantly access the collection for
+        // read (but writers still get CME), so traverse once to find
+        // elements to delete, a second pass to physically expunge.
+        if (i < end) {
+            int start = i;
+            long[] deathRow = nBits(end - start);
+            deathRow[0] = 1L;
+            for (i = start + 1; i < end; i++) {
+                if (filter.test(right.next())) {
+                    setBit(deathRow, i - start);
+                }
+            }
+            if (modCount != expectedModCount) {
+                throw new ConcurrentModificationException();
+            }
+            right = new ListItr(start);
+            ListItr left = new ListItr(start);
+            int w = start;
+            for (i = start; i < end; i++) {
+                E e = right.next();
+                if (isClear(deathRow, i - start)) {
+                    left.next();
+                    left.unsafeSet(e);
+                    w++;
+                }
+            }
+            removeRange(w, end);
+            return true;
+        } else {
+            if (modCount != expectedModCount)
+                throw new ConcurrentModificationException();
+            return false;
+        }
+    }
+    
+    @Override
+    public boolean removeAll(Collection<?> c) {
+        return batchRemove(c, false, 0, size);
+    }
+    
+    @Override
+    public boolean retainAll(Collection<?> c) {
+        return batchRemove(c, true, 0, size);
+    }
+    
+    boolean batchRemove(Collection<?> c, boolean complement, int from, int end) {
+        Objects.requireNonNull(c);
+        ListItr right = new ListItr(from);
+        int r;
+        // Optimize for initial run of survivors
+        for (r = from;; r++) {
+            if (r == end)
+                return false;
+            if (c.contains(right.next()) != complement)
+                break;
+        }
+        ListItr left = new ListItr(r);
+        int w = r++;
+        try {
+            for (E e; r < end; r++) {
+                if (c.contains(e = right.next()) == complement) {
+                    left.next();
+                    left.unsafeSet(e);
+                    w++;
+                }
+            }
+        } finally {
+            // Preserve behavioral compatibility with AbstractCollection,
+            // even if c.contains() throws.
+            
+            // assert r >= w + 1;
+            modCount += r - w - 1; // Extra -1 to negate the +1 inside removeRange
+            removeRange(w, r);
+        }
+        return true;
     }
     
     @Override
@@ -2066,6 +2247,37 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         
         @Override
+        public boolean removeIf(Predicate<? super E> filter) {
+            checkForComodification();
+            int oldSize = root.size;
+            boolean modified = root.removeIf(filter, offset, offset + size);
+            if (modified) {
+                updateSizeAndModCount(root.size - oldSize);
+            }
+            return modified;
+        }
+        
+        @Override
+        public boolean removeAll(Collection<?> c) {
+            return batchRemove(c, false);
+        }
+        
+        @Override
+        public boolean retainAll(Collection<?> c) {
+            return batchRemove(c, true);
+        }
+        
+        private boolean batchRemove(Collection<?> c, boolean complement) {
+            checkForComodification();
+            int oldSize = root.size;
+            boolean modified = root.batchRemove(c, complement, offset, offset + size);
+            if (modified) {
+                updateSizeAndModCount(root.size - oldSize);
+            }
+            return modified;
+        }
+        
+        @Override
         protected void removeRange(int fromIndex, int toIndex) {
             root.removeRange(offset + fromIndex, offset + toIndex);
         }
@@ -2074,6 +2286,31 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         public ForkJoinList<E> subList(int fromIndex, int toIndex) {
             subListRangeCheck(fromIndex, toIndex, size);
             return new SubList<>(this, fromIndex, toIndex);
+        }
+        
+        private void rangeCheckForAdd(int index) {
+            if (index < 0 || index > size) {
+                throw new IndexOutOfBoundsException(outOfBoundsMsg(index));
+            }
+        }
+        
+        private String outOfBoundsMsg(int index) {
+            return "Index: "+index+", Size: "+size;
+        }
+        
+        private void checkForComodification() {
+            if (root.modCount != this.modCount) {
+                throw new ConcurrentModificationException();
+            }
+        }
+        
+        private void updateSizeAndModCount(int sizeChange) {
+            SubList<E> slist = this;
+            do {
+                slist.size += sizeChange;
+                slist.modCount = root.modCount;
+                slist = slist.parent;
+            } while (slist != null);
         }
     }
     
