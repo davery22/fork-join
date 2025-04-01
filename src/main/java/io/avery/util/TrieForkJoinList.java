@@ -537,10 +537,10 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             size += offset;
         }
         pushDownTail();
-        int remaining = tailSize = numNew - offset;
-        size += remaining; // TODO: No
-        // TODO: only if remaining > SPAN
-        offset = directAppend(arr, offset, false);
+        int remaining = numNew - offset;
+        if (remaining > SPAN) {
+            offset = directAppend(arr, offset, AppendMode.NEVER_EMPTY_SRC);
+        }
 //        while (offset + SPAN < numNew) {
 //            tailSize = SPAN;
 //            size += SPAN;
@@ -549,8 +549,9 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
 //        }
         claimTail();
         Object[] newTailChildren = new Object[SPAN];
-        System.arraycopy(arr, offset, newTailChildren, 0, remaining);
+        System.arraycopy(arr, offset, newTailChildren, 0, tailSize = numNew - offset);
         tail = new Node(newTailChildren);
+        size += remaining;
         return true;
     }
     
@@ -773,7 +774,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             left.rootShift = rootShifts[0];
             left.root = splitRoots[0];
             left.size = index;
-            left.directAppend(new Object[]{ element }, 0, true);
+            left.directAppend(new Object[]{ element }, 0, AppendMode.ALWAYS_EMPTY_SRC);
             
             // Concat right onto left
             size++;
@@ -984,8 +985,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         
         // First pass
         Node oldRoot = root, node = oldRoot;
-        int oldRootShift = rootShift;
-        int deepestNonFullAncestorShift = oldRootShift + SHIFT;
+        int oldRootShift = rootShift, deepestNonFullAncestorShift = oldRootShift + SHIFT;
         for (int shift = oldRootShift; shift > 0; shift -= SHIFT) {
             int len = node.children.length;
             if (len < SPAN) {
@@ -1058,218 +1058,166 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         parent.children[lastIdx] = tail;
     }
     
+    enum AppendMode {
+        // Used when inserting into the root
+        // Need not fill rightmost leaf (subsequent concatenation will fixup sizes)
+        ALWAYS_EMPTY_SRC,
+        
+        // Used when inserting into the tail, but not at the end
+        // Must fill rightmost leaf, but need not preserve any elements for tail
+        EMPTY_SRC_TO_FILL,
+        
+        // Used when inserting at the end
+        // Must fill rightmost leaf and preserve at least one element for tail
+        NEVER_EMPTY_SRC
+    }
+    
     // Services add(i,e), addAll(i,es), addAll(es)
-    // Reads root, rootShift, size
+    // Reads root, rootShift
     // May update root, rootShift
-    private int directAppend(Object[] elements, int offset, boolean canEmpty) {
+    private int directAppend(Object[] src, int offset, AppendMode mode) {
+        // If root is null, we should fill up and push down a tail before calling this method.
         assert root != null;
         
-        // add(i,e) can just put the (single) element at the end
-        // addAll(es) may skip a prefix, should fill nodes until <= SPAN elements remain - put them in new tail
-        // addAll(i,es) may skip a prefix, should fill nodes until <= (SPAN-oldSuffix) elements remain - put them in new tail
-        //  - TODO: Actually we'd prefer to put part of that suffix under root as well, if it fills a leaf
-        //     But it might be easier to do that with a separate tail push-down afterward
+        // TODO: There are probably several overflow bugs here,
+        //  as a tall sparse tree can have remaining space > Integer.MAX_VALUE.
         
-        // If inserting in the root (add(i,e)/addAll(i,es) only): we may append to an existing rightmost leaf node
-        //  - This is because we split the root, and would prefer to only leave a gap to the right and not also to the
-        //    left of insertion, especially since we'd like to avoid introducing size tables to the left. To the right,
-        //    can introduce size tables during concatenation.
-        //  - In the usual case, we'd end up with a non-full rightmost leaf, so may need to size ancestors (unless
-        //    concat can do that for us)
-        // Else inserting in the tail (addAll([i,]es) only): we will push down a full tail first
-        //  - Only case where canEmpty = false
-        //    - If i == size, we must preserve some elements for tail
-        //    - Else, we still don't want to empty if it leaves a non-full rightmost leaf - since we won't be doing
-        //      concatenation, it won't have a chance to fix that
-        
-        // 1. Traverse down to calculate remaining space, and get rightmost leaf
-        // 2. If not full, fill rightmost leaf (own stack) and advance offset (if this depletes elements, return)
-        // 3. Remaining space is a multiple of span.
-        //      numElements = elements.length - offset
-        //      leftover = canEmpty ? (numElements % SPAN) : ((numElements-1) % SPAN)+1
-        //      toIndex = elements.length - leftover;
-        //      numElements = toIndex - offset;
-        //    while remainingSpace < numElements:
-        //      add a new root (remainingSpace += ((SPAN-1) << newShift)) [really, add 1 to number of new levels needed]
-        // 4. Create a stack of length = (shift / SHIFT) + newLevels;
-        //      start at old root and index
-        //      while i >= deepestOwned:
-        //        stack[i] = node, offset = children.length
-        //      traverse up the stack and copy nodes with added length
-        
-//        boolean owned = ownsRoot();
-        int remainingSpace = 0, oldRootShift = rootShift, deepestNonFullShift = oldRootShift + SHIFT;//, deepestOwned = oldRootShift / SHIFT - 1;
-        Node node = root;
-        
+        // Find the deepest non-full node - we will acquire ownership down to that point.
+        // Also keep track of remaining space, used to determine if we need to add nodes above root.
+        Node oldRoot = root, node = oldRoot;
+        int oldRootShift = rootShift, deepestNonFullShift = oldRootShift + SHIFT, remainingSpace = 0;
         for (int shift = oldRootShift; shift > 0; shift -= SHIFT) {
             int len = node.children.length;
             if (len != SPAN) {
                 deepestNonFullShift = shift;
+                remainingSpace += ((SPAN - len) << shift);
             }
-            remainingSpace += ((SPAN - len) << shift);
-//            if (owned && (owned = ((ParentNode) node).owns(len-1))) {
-//                deepestOwned--;
-//            }
             node = (Node) node.children[len-1];
         }
+        int firstLeafSpace = SPAN - node.children.length;
+        if (firstLeafSpace != 0) {
+            deepestNonFullShift = 0;
+            remainingSpace += firstLeafSpace;
+        }
         
-        int leafLen = node.children.length, slots = SPAN - leafLen;
-//        if (len != SPAN) {
-//            deepestNonFullShift = 0;
-//        }
-        int remSpace = remainingSpace += slots;
-        int numElements = elements.length - offset;
+        // Figure out how many elements we are actually adding.
+        // Depends on the mode, and how many elements are left after filling the first rightmost leaf.
+        int numElements = src.length - offset, firstFill = Math.min(numElements, firstLeafSpace);
+        numElements -= firstFill;
+        int toIndex = switch (mode) {
+            case ALWAYS_EMPTY_SRC -> src.length;
+            case EMPTY_SRC_TO_FILL -> src.length - (numElements & MASK);
+            case NEVER_EMPTY_SRC -> src.length - ((numElements-1) & MASK)-1;
+        };
+        numElements = toIndex - offset;
         
-//        int numElements = elements.length - offset - slots;
-//        int leftover = canEmpty ? (numElements & MASK) : ((numElements-1) & MASK)+1;
-//        int toIndex = elements.length - leftover;
-//        numElements = toIndex - offset - slots;
+        // Initialize stack of nodes, which will be used at the end to
+        // add elements from the bottom of the tree, in node-sized chunks.
+        // We increment the height above the current root until the tree has capacity for all elements.
+        int initialHeight = oldRootShift / SHIFT, height = initialHeight;
+        for (int shift = oldRootShift, remSpace = remainingSpace; remSpace < numElements; ) {
+            height++;
+            shift += SHIFT;
+            remSpace += ((SPAN-1) << shift); // TODO: Overflow? add '&& remSpace >= 0' to loop condition
+        }
+        Frame[] stack = new Frame[height];
         
-        if (slots >= numElements) {
-            // TODO: Generalize this path for slots != 0, by calculating node lengths
-            if (oldRootShift == 0) {
-                node = getEditableRoot(leafLen + numElements);
-            }
-            else {
-                node = getEditableRoot();
-                for (int shift = oldRootShift; ; shift -= SHIFT) {
-                    int lastIdx = node.children.length-1;
-                    if (node instanceof SizedParentNode sn) {
-                        Sizes sizes = sn.sizes();
-                        sizes.inc(lastIdx, numElements);
-                    }
-                    if (shift == SHIFT) {
-                        node = node.getEditableChild(lastIdx, leafLen + numElements);
-                        break;
-                    }
-                    node = node.getEditableChild(lastIdx);
+        // Populate the stack by copying the path to the current rightmost leaf node.
+        // Along the way, we take ownership of nodes (down to the deepest non-full node),
+        // increase their capacity to fit remaining elements, and pre-populate sizes as needed.
+        int shift = oldRootShift,
+            oldLen = oldRoot.children.length,
+            remainingSpaceUnder = remainingSpace - ((SPAN - oldLen) << shift),
+            remainingElements = Math.max(0, numElements - remainingSpaceUnder),
+            newLen = Math.min(SPAN, oldLen + ((remainingElements-1) >> shift)+1); // Sign-extending shift, so -1 stays -1
+        node = deepestNonFullShift <= shift ? oldRoot = root = getEditableRoot(newLen) : oldRoot;
+        
+        for (int i = initialHeight-1; shift > 0; i--) {
+            // TODO: Ensure new children are owned
+            stack[i] = new Frame(node, oldLen-1);
+            if (node instanceof SizedParentNode sn) {
+                Sizes sizes = sn.sizes();
+                int oldLastSize = sizes.get(oldLen-1);
+                sizes.set(oldLen-1, oldLastSize + Math.min(numElements, remainingSpaceUnder));
+                if (oldLen != newLen) {
+                    int newLastSize = sizes.fill(oldLen, newLen-1, shift);
+                    sizes.set(newLen-1, Math.min(oldLastSize + numElements, newLastSize + (1 << shift)));
                 }
             }
-            System.arraycopy(elements, offset, node.children, leafLen, numElements);
-            return elements.length;
+            shift -= SHIFT;
+            int oldChildLen = ((Node) node.children[oldLen-1]).children.length;
+            remainingSpaceUnder -= ((SPAN - oldChildLen) << shift);
+            remainingElements = Math.max(0, numElements - remainingSpaceUnder);
+            int newChildLen = Math.min(SPAN, oldChildLen + ((remainingElements-1) >> shift)+1); // Sign-extending shift, so -1 stays -1
+            node = deepestNonFullShift <= shift ? node.getEditableChild(oldLen-1, newChildLen) : (Node) node.children[oldLen-1];
+            oldLen = oldChildLen;
+            newLen = newChildLen;
         }
         
-        if (slots != 0) {
-            // Size existing nodes appropriately
+        // Fill the current rightmost leaf node.
+        // This may not do anything (if already full), or it may be the only thing we do (if insufficient elements to fill).
+        System.arraycopy(src, offset, node.children, oldLen, firstFill);
+        if ((offset += firstFill) == toIndex) {
+            return toIndex;
         }
-        else {
-            if (numElements <= SPAN) {
+        
+        // Add new nodes above current root if needed to fit all elements.
+        if (initialHeight != height) {
+            remainingSpaceUnder = remainingSpace;
+            remainingElements = numElements - remainingSpaceUnder;
+            boolean owned = claimRoot();
+            // TODO: If oldRootShift == 0 then len == SPAN now (otherwise we would have already returned)
+            //  So can simplify to (node instanceof SizedParentNode sn ? sn.sizes().get(node.children.length-1) : -1)
+            int childSize = getSizeIfNeedsSizedParent(node = oldRoot, true, shift = oldRootShift);
             
+            for (int i = initialHeight; i < height; i++) {
+                shift += SHIFT;
+                int len = Math.min(SPAN, ((remainingElements-1) >> shift)+2);
+                ParentNode parent;
+                if (childSize != -1) {
+                    Sizes sizes = Sizes.of(shift, len);
+                    sizes.set(0, childSize);
+                    if (len != 1) {
+                        int newLastSize = sizes.fill(1, len-1, shift);
+                        sizes.set(len-1, childSize = Math.min(childSize + remainingElements, newLastSize + (1 << shift)));
+                    }
+                    parent = new SizedParentNode(new Object[len], sizes, true);
+                }
+                else {
+                    parent = new ParentNode(new Object[len], true);
+                }
+                parent.children[0] = node;
+                parent.claimOrDisown(0, owned);
+                stack[i] = new Frame(node = parent, 0);
+                owned = true;
+                remainingSpaceUnder += ((SPAN-1) << shift);
+                remainingElements = numElements - remainingSpaceUnder;
             }
+            
+            root = node;
+            rootShift = shift;
         }
         
-        // TODO: slots == 0 but elements fit in one node
-        //  - Carve a path from deepest non-full ancestor to new leaf
-        // TODO: slots == 0 and elements don't fit in one node
-        //  - build a stack, size nodes big enough to fit remaining elements
-        // TODO: slots != 0 but elements don't fit
-        //  -
-        //  - build a stack, size nodes big enough to fit remaining elements
-        //    - compute size tables in advance for existing nodes and new ancestors
-        
-        
-        
-        // TODO: Eventually:
-        
-        int toIndex = 0; // TODO
-        Frame[] stack = null; // TODO
+        // Finally, fill up the tree from the bottom, in node-sized chunks.
+        numElements -= firstFill;
         Frame parent = stack[0];
         while (offset != toIndex) {
-            int i = 0, shift = SHIFT;
-            for (; ++parent.offset == parent.node.children.length; shift += SHIFT) {
+            int i = 0, childShift = 0;
+            for (; ++parent.offset == SPAN; childShift += SHIFT) {
                 parent = stack[++i];
             }
-            for (; i > 0; shift -= SHIFT) {
-                int childSize = Math.min(SPAN, ((toIndex-offset-1) >>> shift)+1);
+            for (; i > 0; childShift -= SHIFT) {
+                int newChildSize = Math.min(SPAN, ((numElements-1) >>> childShift)+1);
                 Frame child = stack[--i];
-                parent.node.children[parent.offset] = child.node = new ParentNode(new Object[childSize], true);
+                parent.node.children[parent.offset] = child.node = new ParentNode(new Object[newChildSize], true);
                 child.offset = 0;
                 parent = child;
             }
-            parent.node.children[parent.offset] = Arrays.copyOfRange(elements, offset, offset += SPAN);
+            parent.node.children[parent.offset] = new Node(Arrays.copyOfRange(src, offset, offset += Math.min(SPAN, numElements)));
+            numElements -= SPAN;
         }
         
-        root = stack[stack.length-1].node;
-        rootShift = SHIFT * stack.length;
         return toIndex;
-        
-//        if (slots != 0) {
-//            // TODO: We want to fill the stack here, which means we must know the size of the stack
-//            if (remSpace > (1 << oldRootShift)) {
-//                int addedLen = remSpace / (1 << oldRootShift);
-//                node = getEditableRoot(root.children.length + addedLen);
-//            }
-//            else {
-//                node = getEditableRoot();
-//            }
-//            for (int shift = oldRootShift; shift > 0; shift -= SHIFT) {
-//            }
-//        }
-//
-//
-//        if (slots == 0) {
-//            // No room in rightmost leaf - move on
-//        }
-//        else {
-//            // TODO: Take ownership of this leaf
-//
-//            int items = elements.length - offset;
-//            if (slots >= items) {
-//                // Fit everything in this leaf and return
-//                node = node.copy(true, leafLen + items);
-//                System.arraycopy(elements, offset, node.children, leafLen, items);
-//                return elements.length;
-//            }
-//            else {
-//                // Fill this leaf and move on
-//                node = node.copy(true, SPAN);
-//                System.arraycopy(elements, offset, node.children, leafLen, slots);
-//                offset += slots;
-//            }
-//        }
-        
-//        stackCopying: {
-//            int j;
-//            if (!ownsRoot()) {
-//                if (stack == null) { // implies rootShift == 0
-//                    (leaf.node = getEditableRoot()).children[leaf.offset + adj] = e;
-//                    return;
-//                }
-//                stack[j = stack.length-1].node = getEditableRoot();
-//            }
-//            else if ((j = deepestOwned) == -1) {
-//                break stackCopying;
-//            }
-//            for (; j > 0; j--) {
-//                stack[j-1].node = stack[j].node.getEditableChild(stack[j].offset);
-//            }
-//            leaf.node = stack[0].node.getEditableChild(stack[0].offset);
-//            deepestOwned = -1;
-//        }
-//        leaf.node.children[leaf.offset + adj] = e;
-
-
-//        int i = 0;
-//        Frame parent = stack[i];
-//        while (parent.offset == parent.node.children.length-1) {
-//            parent = stack[++i];
-//        }
-//        parent.offset++;
-//        boolean owned = deepestOwned <= i;
-//        int newDeepestOwned = owned ? i : deepestOwned;
-//        while (i > 0) {
-//            if (owned && (owned = ((ParentNode) parent.node).owns(parent.offset))) {
-//                newDeepestOwned--;
-//            }
-//            Frame child = stack[--i];
-//            child.node = (Node) parent.node.children[parent.offset];
-//            child.offset = 0;
-//            parent = child;
-//        }
-//        deepestOwned = (owned && ((ParentNode) parent.node).owns(parent.offset)) ? newDeepestOwned-1 : newDeepestOwned;
-//        leaf.offset = 0;
-//        return leaf.node = (Node) parent.node.children[parent.offset];
-    
     }
     
     @Override
@@ -3030,6 +2978,11 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         
         SizedParentNode(Object[] children, Sizes sizes) {
             super(children);
+            this.sizes = sizes.unwrap();
+        }
+        
+        SizedParentNode(Object[] children, Sizes sizes, boolean owned) {
+            super(children, owned);
             this.sizes = sizes.unwrap();
         }
         
