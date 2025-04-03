@@ -113,7 +113,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     }
     
     public TrieForkJoinList(Collection<? extends E> c) {
-        // A tailored version of addAll()
+        // Basically a tailored version of addAll()
         Object[] arr = c.toArray();
         int numNew = arr.length;
         if (numNew == 0) {
@@ -143,7 +143,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         tail = toCopy.tail;
     }
     
-    // addAll(index, collection) - Use collection.toArray(), or join(index, new [owned] TrieForkJoinList<>(collection)), unless after tailOffset
     // listIterator(index)
     //  add(element)
     //  remove()
@@ -161,6 +160,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     // -iterator()
     // -listIterator()
     // -addAll(collection)
+    // -addAll(index, collection)
     // -get(index)
     // -set(index, element)
     // -add(element)

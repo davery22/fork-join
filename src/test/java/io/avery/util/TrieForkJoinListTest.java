@@ -47,6 +47,16 @@ class TrieForkJoinListTest {
             argumentSet("addAll2", id(TrieForkJoinListTest::addAll2)),
             argumentSet("addAll3", id(TrieForkJoinListTest::addAll3)),
             argumentSet("addAll4", id(TrieForkJoinListTest::addAll4)),
+            argumentSet("addAllAtIndex1", id(TrieForkJoinListTest::addAllAtIndex1)),
+            argumentSet("addAllAtIndex2", id(TrieForkJoinListTest::addAllAtIndex2)),
+            argumentSet("addAllAtIndex3", id(TrieForkJoinListTest::addAllAtIndex3)),
+            argumentSet("addAllAtIndex4", id(TrieForkJoinListTest::addAllAtIndex4)),
+            argumentSet("addAllAtIndex5", id(TrieForkJoinListTest::addAllAtIndex5)),
+            argumentSet("addAllAtIndex6", id(TrieForkJoinListTest::addAllAtIndex6)),
+            argumentSet("addAllAtIndex7", id(TrieForkJoinListTest::addAllAtIndex7)),
+            argumentSet("addAllAtIndex8", id(TrieForkJoinListTest::addAllAtIndex8)),
+            argumentSet("addAllAtIndex9", id(TrieForkJoinListTest::addAllAtIndex9)),
+            argumentSet("addAllAtIndex10", id(TrieForkJoinListTest::addAllAtIndex10)),
             argumentSet("subListFork1", id(TrieForkJoinListTest::subListFork1)),
             argumentSet("removeRange1", id(TrieForkJoinListTest::removeRange1)),
             argumentSet("removeRange2", id(TrieForkJoinListTest::removeRange2)),
@@ -239,6 +249,91 @@ class TrieForkJoinListTest {
         ForkJoinList<Integer> list = listOfSize(factory, size);
         List<Integer> toAdd = IntStream.range(0, 1000).boxed().toList();
         list.addAll(toAdd);
+        return list;
+    }
+    
+    static ForkJoinList<Integer> addAllAtIndex1(Factory factory) {
+        // Add at end
+        ForkJoinList<Integer> list = listOfSize(factory, 500);
+        List<Integer> toAdd = IntStream.range(0, 5000).boxed().toList();
+        list.addAll(list.size(), toAdd);
+        return list;
+    }
+    
+    static ForkJoinList<Integer> addAllAtIndex2(Factory factory) {
+        // Add empty
+        ForkJoinList<Integer> list = listOfSize(factory, 500);
+        List<Integer> toAdd = List.of();
+        list.addAll(list.size()/2, toAdd);
+        return list;
+    }
+    
+    static ForkJoinList<Integer> addAllAtIndex3(Factory factory) {
+        // Insert elements into the existing tail, elements fit into existing tail
+        int size = SPAN*1000 - SPAN/2;
+        ForkJoinList<Integer> list = listOfSize(factory, size);
+        List<Integer> toAdd = IntStream.range(0, SPAN/2).boxed().toList();
+        list.addAll(size - SPAN/4, toAdd);
+        return list;
+    }
+    
+    static ForkJoinList<Integer> addAllAtIndex4(Factory factory) {
+        // Insert few elements into the existing tail, elements do not fit into existing tail
+        int size = SPAN*1000 - SPAN/2;
+        ForkJoinList<Integer> list = listOfSize(factory, size);
+        List<Integer> toAdd = IntStream.range(0, SPAN).boxed().toList();
+        list.addAll(size - SPAN/4, toAdd);
+        return list;
+    }
+    
+    static ForkJoinList<Integer> addAllAtIndex5(Factory factory) {
+        // Insert few elements into the existing tail, elements do not fit into existing tail
+        int size = SPAN*1000;
+        ForkJoinList<Integer> list = listOfSize(factory, size);
+        List<Integer> toAdd = IntStream.range(0, SPAN + SPAN/2).boxed().toList();
+        list.addAll(size - SPAN/2, toAdd);
+        return list;
+    }
+    
+    static ForkJoinList<Integer> addAllAtIndex6(Factory factory) {
+        // Insert many elements into the existing tail
+        int size = SPAN*1000;
+        ForkJoinList<Integer> list = listOfSize(factory, size - SPAN/2);
+        List<Integer> toAdd = IntStream.range(0, size + 3*SPAN/4).boxed().toList();
+        list.addAll(size - 3*SPAN/4, toAdd);
+        return list;
+    }
+    
+    static ForkJoinList<Integer> addAllAtIndex7(Factory factory) {
+        // Insert many elements into the existing tail
+        int size = SPAN*1000;
+        ForkJoinList<Integer> list = listOfSize(factory, size);
+        List<Integer> toAdd = IntStream.range(0, size + SPAN/2).boxed().toList();
+        list.addAll(size - 3*SPAN/4, toAdd);
+        return list;
+    }
+    
+    static ForkJoinList<Integer> addAllAtIndex8(Factory factory) {
+        // Prepend few elements
+        ForkJoinList<Integer> list = listOfSize(factory, 500);
+        List<Integer> toAdd = IntStream.range(0, SPAN/2).boxed().toList();
+        list.addAll(0, toAdd);
+        return list;
+    }
+    
+    static ForkJoinList<Integer> addAllAtIndex9(Factory factory) {
+        // Prepend many elements
+        ForkJoinList<Integer> list = listOfSize(factory, 500);
+        List<Integer> toAdd = IntStream.range(0, 1000).boxed().toList();
+        list.addAll(0, toAdd);
+        return list;
+    }
+    
+    static ForkJoinList<Integer> addAllAtIndex10(Factory factory) {
+        // Insert into root
+        ForkJoinList<Integer> list = listOfSize(factory, 500);
+        List<Integer> toAdd = IntStream.range(0, 1000).boxed().toList();
+        list.addAll(200, toAdd);
         return list;
     }
     
@@ -463,7 +558,24 @@ class TrieForkJoinListTest {
     
     @Test
     void testInitFromCollection1() {
+        // Init from big collection
         List<Integer> expected = IntStream.range(0, 1_000_000).boxed().toList();
+        List<Integer> actual = new TrieForkJoinList<>(expected);
+        assertEquals(expected, actual);
+    }
+    
+    @Test
+    void testInitFromCollection2() {
+        // Init from small collection
+        List<Integer> expected = IntStream.range(0, SPAN/2).boxed().toList();
+        List<Integer> actual = new TrieForkJoinList<>(expected);
+        assertEquals(expected, actual);
+    }
+    
+    @Test
+    void testInitFromCollection3() {
+        // Init from empty collection
+        List<Integer> expected = List.of();
         List<Integer> actual = new TrieForkJoinList<>(expected);
         assertEquals(expected, actual);
     }
