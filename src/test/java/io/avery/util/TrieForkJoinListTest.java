@@ -14,7 +14,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.params.provider.Arguments.argumentSet;
 
 class TrieForkJoinListTest {
-    static final int SPAN = 16; // TODO: = TrieForkJoinList.SPAN
+    static final int SPAN = TrieForkJoinList.SPAN;
     static final Factory TRIE_FJL = TrieForkJoinList::new;
     static final Factory ARRAY_FJL = ArrayForkJoinList::new;
     
