@@ -1,5 +1,6 @@
 package io.avery.util;
 
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments.ArgumentSet;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -458,6 +459,13 @@ class TrieForkJoinListTest {
             iterSetForward(iter, result);
         }
         return result;
+    }
+    
+    @Test
+    void testInitFromCollection1() {
+        List<Integer> expected = IntStream.range(0, 1_000_000).boxed().toList();
+        List<Integer> actual = new TrieForkJoinList<>(expected);
+        assertEquals(expected, actual);
     }
     
     static ForkJoinList<Integer> fuzz(int seed, Factory factory) {
