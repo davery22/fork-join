@@ -10,6 +10,7 @@ import java.util.function.Function;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.params.provider.Arguments.argumentSet;
 
@@ -70,6 +71,14 @@ class TrieForkJoinListTest {
             argumentSet("removeRange10", id(TrieForkJoinListTest::removeRange10)),
             argumentSet("removeRange11", id(TrieForkJoinListTest::removeRange11)),
             argumentSet("removeRange12", id(TrieForkJoinListTest::removeRange12)),
+            argumentSet("toArray1", id(TrieForkJoinListTest::toArray1)),
+            argumentSet("toArray2", id(TrieForkJoinListTest::toArray2)),
+            argumentSet("toArray3", id(TrieForkJoinListTest::toArray3)),
+            argumentSet("toArray4", id(TrieForkJoinListTest::toArray4)),
+            argumentSet("toArray5", id(TrieForkJoinListTest::toArray5)),
+            argumentSet("toArray6", id(TrieForkJoinListTest::toArray6)),
+            argumentSet("subListToArray1", id(TrieForkJoinListTest::subListToArray1)),
+            argumentSet("subListToArray2", id(TrieForkJoinListTest::subListToArray2)),
             argumentSet("iterator1", id(TrieForkJoinListTest::iterator1)),
             argumentSet("iterator2", id(TrieForkJoinListTest::iterator2)),
             argumentSet("iterator3", id(TrieForkJoinListTest::iterator3)),
@@ -88,7 +97,14 @@ class TrieForkJoinListTest {
     @ParameterizedTest
     @MethodSource("provideCreators")
     void testCreatesEqual(Function<Factory, Object> creator) {
-        assertEquals(creator.apply(ARRAY_FJL), creator.apply(TRIE_FJL));
+        Object expected = creator.apply(ARRAY_FJL);
+        Object actual = creator.apply(TRIE_FJL);
+        if (expected instanceof Object[] e && actual instanceof Object[] a) {
+            assertArrayEquals(e, a);
+        }
+        else {
+            assertEquals(expected, actual);
+        }
     }
     
     static ForkJoinList<Integer> join1(Factory factory) {
@@ -430,6 +446,48 @@ class TrieForkJoinListTest {
         ForkJoinList<Integer> list = listOfSize(factory, size);
         list.subList(100, size-SPAN/2).clear();
         return list;
+    }
+    
+    static Object toArray1(Factory factory) {
+        // Tail-only
+        return listOfSize(factory, SPAN/2).toArray();
+    }
+    
+    static Object toArray2(Factory factory) {
+        // Shallow root and tail
+        return listOfSize(factory, SPAN + SPAN/2).toArray();
+    }
+    
+    static Object toArray3(Factory factory) {
+        // Deep root and tail
+        return listOfSize(factory, SPAN*1000).toArray();
+    }
+    
+    static Object toArray4(Factory factory) {
+        // Pass in undersized array
+        return listOfSize(factory, SPAN*10).toArray(new Object[0]);
+    }
+    
+    static Object toArray5(Factory factory) {
+        // Pass in oversized array
+        return listOfSize(factory, SPAN*10).toArray(new Object[SPAN*100]);
+    }
+    
+    static Object toArray6(Factory factory) {
+        // Concatenated list
+        ForkJoinList<Integer> list = listOfSize(factory, 113);
+        list.join(list.fork());
+        return list.toArray();
+    }
+    
+    static Object subListToArray1(Factory factory) {
+        // Range in shallow root
+        return listOfSize(factory, SPAN*2).subList(SPAN/4, SPAN/2).toArray();
+    }
+    
+    static Object subListToArray2(Factory factory) {
+        // Range in deep root
+        return listOfSize(factory, SPAN*1000).subList(100, 1000).toArray();
     }
     
     static void iterSetForward(ListIterator<Integer> iter, List<Integer> result) {

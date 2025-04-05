@@ -153,7 +153,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     //  - not to mention 'range' variants
     // -toArray()
     // -toArray(arr)
-    //
     // -removeIf(predicate)
     // -removeAll(collection)
     // -retainAll(collection)
@@ -685,48 +684,105 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     
     @Override
     public Object[] toArray() {
-        return toArray(new Object[size]);
+        return toArray(new Object[size], 0, size);
     }
     
     @Override
-    @SuppressWarnings("unchecked")
     public <T> T[] toArray(T[] a) {
-        if (a.length < size) {
-            a = (T[]) Array.newInstance(a.getClass().componentType(), size);
-        }
-        int offset = 0;
-        if (root != null) {
-            if (rootShift == 0) {
-                System.arraycopy(root.children, 0, a, 0, offset = root.children.length);
-            }
-            else {
-                ToArrayState state = new ToArrayState();
-                state.arr = a;
-                toArrayRec(state, root, rootShift);
-                offset = state.offset;
-            }
-        }
-        System.arraycopy(tail.children, 0, a, offset, tailSize);
-        if (a.length > size)
-            a[size] = null;
-        return a;
+        return toArray(a, 0, size);
     }
     
-    private static class ToArrayState { Object[] arr; int offset; }
-    private static void toArrayRec(ToArrayState state, Node node, int shift) {
-        if (shift == SHIFT) {
-            for (Object child : node.children) {
-                Object[] children = ((Node) child).children;
-                System.arraycopy(children, 0, state.arr, state.offset, children.length);
-                state.offset += children.length;
+    @SuppressWarnings("unchecked")
+    private <T> T[] toArray(T[] a, int fromIndex, int toIndex) {
+        int range = toIndex - fromIndex;
+        if (a.length < range) {
+            a = (T[]) Array.newInstance(a.getClass().componentType(), range);
+        }
+        
+        int tailOffset = tailOffset();
+        if (fromIndex >= tailOffset) {
+            // Starts and ends in the tail
+            System.arraycopy(tail.children, fromIndex - tailOffset, a, 0, range);
+        }
+        else if (rootShift == 0) {
+            if (toIndex <= tailOffset) {
+                // Starts and ends in the root
+                System.arraycopy(root.children, fromIndex, a, 0, range);
+            }
+            else {
+                // Starts in the root, ends in the tail
+                int len = root.children.length;
+                System.arraycopy(root.children, fromIndex, a, 0, len);
+                System.arraycopy(tail.children, 0, a, len, range - len);
             }
         }
         else {
-            shift -= SHIFT;
-            for (Object child : node.children) {
-                toArrayRec(state, (Node) child, shift);
+            // Starts in the root...
+            Node curr = root;
+            int shift = rootShift, index = fromIndex;
+            Frame[] stack = new Frame[shift / SHIFT];
+            
+            for (int i = stack.length-1; i >= 0; i--, shift -= SHIFT) {
+                int childIdx = (index >>> shift) & MASK;
+                if (curr instanceof SizedParentNode sn) {
+                    Sizes sizes = sn.sizes();
+                    while (sizes.get(childIdx) <= index) {
+                        childIdx++;
+                    }
+                    if (childIdx > 0) {
+                        index -= sizes.get(childIdx-1);
+                    }
+                }
+                stack[i] = new Frame(curr, childIdx);
+                curr = (Node) curr.children[childIdx];
+            }
+            
+            index &= MASK;
+            int i = 0, offset = 0, copyLen;
+            Frame parent = stack[0];
+            
+            if (toIndex < tailOffset) {
+                // ...Ends in the root
+                System.arraycopy(curr.children, index, a, offset, copyLen = Math.min(range - offset, curr.children.length - index));
+                while ((offset += copyLen) != range) {
+                    while (++parent.offset == SPAN) {
+                        parent = stack[++i];
+                    }
+                    while (i > 0) {
+                        Frame child = stack[--i];
+                        child.node = (Node) parent.node.children[parent.offset];
+                        child.offset = 0;
+                        parent = child;
+                    }
+                    curr = (Node) parent.node.children[parent.offset];
+                    System.arraycopy(curr.children, 0, a, offset, copyLen = Math.min(range - offset, curr.children.length));
+                }
+            }
+            else {
+                // ...Ends at or in the tail
+                int fence = range - (toIndex - tailOffset);
+                System.arraycopy(curr.children, index, a, offset, copyLen = curr.children.length - index);
+                while ((offset += copyLen) != fence) {
+                    while (++parent.offset == SPAN) {
+                        parent = stack[++i];
+                    }
+                    while (i > 0) {
+                        Frame child = stack[--i];
+                        child.node = (Node) parent.node.children[parent.offset];
+                        child.offset = 0;
+                        parent = child;
+                    }
+                    curr = (Node) parent.node.children[parent.offset];
+                    System.arraycopy(curr.children, 0, a, offset, copyLen = curr.children.length);
+                }
+                System.arraycopy(tail.children, 0, a, offset, range - fence);
             }
         }
+        
+        if (a.length > range) {
+            a[range] = null;
+        }
+        return a;
     }
     
     @Override
@@ -1292,8 +1348,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         // Finally, fill up the tree from the bottom, in node-sized chunks.
         numElements -= firstFill;
         Frame parent = stack[0];
+        int i = 0, childShift = 0;
         while (offset != toIndex) {
-            int i = 0, childShift = 0;
             for (; ++parent.offset == SPAN; childShift += SHIFT) {
                 parent = stack[++i];
             }
@@ -2473,6 +2529,16 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             this.offset = parent.offset + fromIndex;
             this.size = toIndex - fromIndex;
             this.modCount = parent.modCount;
+        }
+        
+        @Override
+        public Object[] toArray() {
+            return root.toArray(new Object[size], offset, offset + size);
+        }
+        
+        @Override
+        public <T> T[] toArray(T[] a) {
+            return root.toArray(a, offset, offset + size);
         }
         
         @Override
