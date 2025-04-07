@@ -215,6 +215,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     //  - potentially faster add/remove, if we can sometimes bypass rebalancing
     // Cons of custom iterator:
     //  - sublist forking needs to be a co-mod to avoid silently invalidating iterator stacks
+    //    - or, needs to update a forkId field that iterator can check against
     //  - iterator retains a strong reference to root (even after external co-mod), preventing GC
     
     
@@ -239,6 +240,11 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     }
     
     // TODO: See if this is actually faster than consecutive get(index)
+    //  Update: Needs a proper benchmark, but for iteration across 100M elements:
+    //                            |  iteration only  |  iteration + setting  |  forEachRemaining  (seconds)
+    //   ArrayList                |  0.13            |  1.10                 |  0.08
+    //   TFJL w/ custom iterator  |  0.32            |  1.58 (1.22?)         |  0.27 (0.13 optimized)
+    //   TFJL w/ default iterator |  0.88 (best)     |  4.99 (4.22?) (best)  |  0.86
     private class ListItr implements ListIterator<E> {
         Frame[] stack;
         Frame leaf;
@@ -252,6 +258,11 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             init(index);
         }
         
+        // TODO:
+        //  - set()/add()/remove() should invalidate the stack if we were in the stack and had to take ownership of any nodes.
+        //  - forEachRemaining() should invalidate deepestOwned
+        //  - ideally, don't want to maintain deepestOwned when traversing (but for set()...)
+        
         final void checkForComodification() {
             if (modCount != expectedModCount) {
                 throw new ConcurrentModificationException();
@@ -263,7 +274,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             assert cursor < tailOffset();
             
             int i = 0;
-            Frame parent = stack[i];
+            Frame parent = stack[0];
             while (parent.offset == parent.node.children.length-1) {
                 parent = stack[++i];
             }
@@ -289,7 +300,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             assert cursor > 0;
             
             int i = 0;
-            Frame parent = stack[i];
+            Frame parent = stack[0];
             while (parent.offset == 0) {
                 parent = stack[++i];
             }
@@ -431,6 +442,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         
         @Override
+        @SuppressWarnings("unchecked")
         public void forEachRemaining(Consumer<? super E> action) {
             Objects.requireNonNull(action);
             int size = TrieForkJoinList.this.size;
@@ -439,21 +451,42 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 return;
             }
             
-            int tailOffset = tailOffset();
-            Node leafNode = leaf.node;
-            for (; i < size && modCount == expectedModCount; i++) {
-                if (leaf.offset == leafNode.children.length) {
-                    if (i == tailOffset) {
-                        leaf.offset = 0;
-                        leafNode = leaf.node = tail;
-                    }
-                    else {
-                        leafNode = nextLeaf();
-                    }
+            int tailOffset = tailOffset(), j = leaf.offset;
+            i -= j;
+            E[] leafChildren = (E[]) leaf.node.children;
+            while (j < leafChildren.length && modCount == expectedModCount) {
+                action.accept(leafChildren[j++]);
+            }
+            Frame parent = stack != null ? stack[0] : null;
+            while ((i += j) < tailOffset && modCount == expectedModCount) {
+                // Stack is not null - else consuming the first leaf would have moved us past tailOffset
+                j = 0;
+                while (parent.offset == parent.node.children.length-1) {
+                    parent = stack[++j];
                 }
-                @SuppressWarnings("unchecked")
-                E value = (E) leafNode.children[leaf.offset++];
-                action.accept(value);
+                parent.offset++;
+                while (j > 0) {
+                    Frame child = stack[--j];
+                    child.node = (Node) parent.node.children[parent.offset];
+                    child.offset = 0;
+                    parent = child;
+                }
+                leafChildren = (E[]) ((Node) (parent.node.children[parent.offset])).children;
+                while (j < leafChildren.length && modCount == expectedModCount) {
+                    action.accept(leafChildren[j++]);
+                }
+            }
+            if (i < size) {
+                if (parent != null) {
+                    // Fixup in case we iterate backwards later
+                    parent.offset++;
+                }
+                leaf.offset = j = 0;
+                leafChildren = (E[]) (leaf.node = tail).children;
+                while (j < leafChildren.length && modCount == expectedModCount) {
+                    action.accept(leafChildren[j++]);
+                }
+                i += j;
             }
             
             // Update once at end to reduce heap write traffic.
@@ -488,6 +521,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             // the root is owned (if not, we refresh the whole stack), and only then do we trust deepestOwned.
             stackCopying: {
                 int j;
+                // TODO: If we maintain a forkId on the iterator and list, we can check that instead of ownsRoot()
                 if (!ownsRoot()) {
                     if (stack == null) { // implies rootShift == 0
                         (leaf.node = getEditableRoot()).children[leaf.offset + adj] = e;
@@ -509,26 +543,36 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         
         @Override
         public void add(E e) {
-            // TODO: Implement a variant of add that does not need to rebalance every time
-            //  This inserts before the next() element, shifting cursor and subsequent elements right
-            //  If the current leaf is not full, we can use that
-            //  Else if we are in the tail, shift the last element to a new tail, and push-down old tail (with us in it)
-            //  Else we are in a full leaf in the root.
-            //    Adding will shift us right and shift an element off the right end
-            //      This is the only time we could become unbalanced, because we introduce a new node.
-            //      However, if the parent level's children count stays within MARGIN of optimal, we're fine.
-            //      If we ensure it is within MARGIN-1 of optimal before adding a new node, we don't have to worry again (at this level...).
-            //    Want to somehow equate this to splitting plus direct-appending left
-            //      But that strategy can bulk-insert with only one rebalance, vs
-            //      here we do not know when we are 'done', so must ensure balance after each step
-            throw new UnsupportedOperationException();
+            checkForComodification();
+            
+            try {
+                // TODO: Invalidate or refresh stack
+                int i = cursor;
+                TrieForkJoinList.this.add(i, e);
+                cursor = i + 1;
+                lastRet = -1;
+                expectedModCount = modCount;
+            } catch (IndexOutOfBoundsException ex) {
+                throw new ConcurrentModificationException();
+            }
         }
         
         @Override
         public void remove() {
-            // TODO: Implement a variant of remove that does not need to rebalance every time
-            //  This works on the last returned element - cannot be called consecutively, or after add
-            throw new UnsupportedOperationException();
+            if (lastRet < 0) {
+                throw new IllegalStateException();
+            }
+            checkForComodification();
+            
+            try {
+                // TODO: Invalidate or refresh stack
+                TrieForkJoinList.this.remove(lastRet);
+                cursor = lastRet;
+                lastRet = -1;
+                expectedModCount = modCount;
+            } catch (IndexOutOfBoundsException ex) {
+                throw new ConcurrentModificationException();
+            }
         }
     }
     
@@ -1660,6 +1704,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             // the existing tree is now sharing children with a new tree. But here we are discarding the existing tree.
             // So we copy-and-restore ownership of children.
             var oldOwns = left.owns;
+            // TODO: copyPrefix can introduce sizes - due to non-full leaf - that are then obviated by the operation that called split
             nodes[0] = left = left.copyPrefix(left != right || isChildRightmost, fromChildIdx, nodes[0], shift);
             left.owns = oldOwns; // Don't worry about the removed suffix - trailing ownership is ignored
         }
@@ -2145,19 +2190,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     
     private static void rebalance(Node[] nodes, int shift, boolean isRightmost, boolean isRightFirstChildEmpty) {
         // Assume left and right are editable
-        
-        // TODO: Assume left's rightmost child may be not-full, even if !isRightmost.
-        //  If we don't rebalance left, it's simple to refresh based on a known rightmostChildSize
-        //   - if shift = 0, size = children.length
-        //   - else if Sized, size = sizes[last-1] + rightmostChildSize
-        //   - else, size = ((children.length-1) << shift) + rightmostChildSize
-        //  If we DO rebalance left, need to be more careful
-        //   - can empty rightmostChild into a left sibling
-        //   - can empty a right sibling into rightmostChild
-        //   - either way, we will have updatedLeft, and will end up calling refreshSizes
-        //     - if childShift==0, refreshSizes looks at each child's length and creates a size table if needed
-        //     - if childShift!=0, refreshSizes uses getSizeIfNeedsSizedParent, which leverages that children would
-        //       already be Sized if a lower level required it
         
         ParentNode left = (ParentNode) nodes[0], right = (ParentNode) nodes[1];
         
@@ -2681,30 +2713,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             return copy(isOwned);
         }
         
-        Node removeRange(boolean isOwned, int from, int to) {
-            int len = children.length;
-            if (from == 0 && to == len) {
-                return EMPTY_NODE;
-            }
-            int newSize = len - (to-from);
-            Object[] newChildren = new Object[newSize];
-            System.arraycopy(children, 0, newChildren, 0, from);
-            System.arraycopy(children, to, newChildren, from, len-to);
-            if (isOwned) {
-                children = newChildren;
-                return this;
-            }
-            return new Node(newChildren);
-        }
-        
-        Node copySized(boolean isOwned, int shift) {
-            return copy(isOwned);
-        }
-        
-        Node copySized(boolean isOwned, int len, int shift) {
-            return copy(isOwned, len);
-        }
-        
         Node copy(boolean isOwned, int skip, int keep, int take, Node from,
                   boolean isFromOwned, boolean isRightmost, int shift) {
             assert take > 0;
@@ -2853,38 +2861,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 return new ParentNode(newChildren);
             }
             return copy(isOwned);
-        }
-        
-        @Override
-        ParentNode copySized(boolean isOwned, int shift) {
-            if (shift == 0) {
-                return copy(isOwned);
-            }
-            int oldLen = children.length;
-            Sizes sizes = Sizes.of(shift, oldLen);
-            sizes.fill(0, oldLen, shift);
-            if (isOwned) {
-                return new SizedParentNode(owns, children, sizes);
-            }
-            return new SizedParentNode(children.clone(), sizes);
-        }
-        
-        @Override
-        ParentNode copySized(boolean isOwned, int len, int shift) {
-            if (shift == 0) {
-                return copy(isOwned, len);
-            }
-            if (children.length != len) {
-                int oldLen = children.length;
-                Sizes sizes = Sizes.of(shift, len);
-                sizes.fill(0, oldLen, shift);
-                Object[] newChildren = Arrays.copyOf(children, len);
-                if (isOwned) {
-                    return new SizedParentNode(owns, newChildren, sizes);
-                }
-                return new SizedParentNode(newChildren, sizes);
-            }
-            return copySized(isOwned, shift);
         }
         
         ParentNode copyPrefix(boolean isOwned, int toIndex, Node newLastChild, int shift) {
@@ -3204,16 +3180,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 return new SizedParentNode(newChildren, newSizes);
             }
             return copy(isOwned);
-        }
-        
-        @Override
-        SizedParentNode copySized(boolean isOwned, int shift) {
-            return copy(isOwned);
-        }
-        
-        @Override
-        SizedParentNode copySized(boolean isOwned, int len, int shift) {
-            return copy(isOwned, len);
         }
         
         @Override
