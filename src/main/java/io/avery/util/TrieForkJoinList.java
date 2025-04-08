@@ -45,6 +45,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     static final int MARGIN = 2;
     static final int DO_NOT_REDISTRIBUTE = SPAN - MARGIN/2; // During rebalance(), a node with size >= threshold is not redistributed
     static final Node INITIAL_TAIL = new Node(new Object[SPAN]);
+    static final Object INITIAL_FORK_ID = new Object();
     
     private Node root;
     private Node tail;
@@ -53,6 +54,10 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     private int rootShift;
     private byte owns; // only need 2 bits - for root and tail
                        // TODO: Maybe store this in the rootShift? Or make rootShift narrower
+    
+    // This id is copied by ListIterators and compared during ListIterator.set() to detect if a fork() has happened
+    // (including a sublist fork()), which conservatively invalidates ownership of nodes in the iterator stack.
+    private Object forkId = INITIAL_FORK_ID;
     
     private boolean ownsTail() {
         return (owns & 1) != 0;
@@ -249,10 +254,11 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         Frame[] stack;
         Node leafNode;
         byte leafOffset;
+        byte deepestOwned = Byte.MAX_VALUE;
         int cursor;
         int lastRet = -1;
         int expectedModCount = modCount;
-        byte deepestOwned = Byte.MAX_VALUE;
+        Object expectedForkId = forkId;
         
         ListItr(int index) {
             cursor = index;
@@ -260,9 +266,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         
         // TODO:
-        //  - set()/add()/remove() should invalidate the stack if we were in the stack and had to take ownership of any nodes.
-        //  - forEachRemaining() should invalidate deepestOwned
-        //  - ideally, don't want to maintain deepestOwned when traversing (but for set()...)
+        //  - set() invalidate the stack if we were in the stack and had to take ownership of any nodes.
         
         final void checkForComodification() {
             if (modCount != expectedModCount) {
@@ -514,14 +518,13 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 (leafNode = getEditableTail()).children[leafOffset + adj] = e;
                 return;
             }
-            // At this point, deepestOwned may be at most stack.length-1, indicating we always own root at least, which
-            // is of course a lie. But we don't trust that value anyway, because the list may have been forked outside
-            // this iterator, and deepestOwned wouldn't know that the root is no longer owned. So, we first check that
-            // the root is owned (if not, we refresh the whole stack), and only then do we trust deepestOwned.
             stackCopying: {
                 int j;
-                // TODO: If we maintain a forkId on the iterator and list, we can check that instead of ownsRoot()
-                if (!ownsRoot() || (j = deepestOwned) == Byte.MAX_VALUE) {
+                if (expectedForkId != forkId || (j = deepestOwned) == Byte.MAX_VALUE) {
+                    // Either deepestOwned is unset (if this is our first time calling set(), or
+                    // add()/remove()/forEachRemaining() invalidated it), or we can't trust it because
+                    // part or all of the list was forked.
+                    expectedForkId = forkId;
                     if (stack == null) { // implies rootShift == 0
                         (leafNode = getEditableRoot()).children[leafOffset + adj] = e;
                         return;
@@ -1417,6 +1420,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     
     @Override
     public ForkJoinList<E> fork() {
+        // Invalidate stack ownership for any existing ListIterators
+        forkId = new Object();
         // Disown root/tail, to force path-copying upon future mutations
         owns = 0;
         return new TrieForkJoinList<>(this);
@@ -1714,6 +1719,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     }
     
     private TrieForkJoinList<E> forkRange(int fromIndex, int toIndex) {
+        // Invalidate stack ownership for any existing ListIterators
+        forkId = new Object();
         
         // TODO: Handle non-full leaf root before returning?
         
