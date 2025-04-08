@@ -247,11 +247,12 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     //   TFJL w/ default iterator |  0.88 (best)     |  4.99 (4.22?) (best)  |  0.86
     private class ListItr implements ListIterator<E> {
         Frame[] stack;
-        Frame leaf;
+        Node leafNode;
+        byte leafOffset;
         int cursor;
         int lastRet = -1;
         int expectedModCount = modCount;
-        int deepestOwned = -1; // Index of deepest owned parent node in the stack, or -1 if all nodes (including leaf) are owned
+        byte deepestOwned = Byte.MAX_VALUE;
         
         ListItr(int index) {
             cursor = index;
@@ -270,7 +271,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         
         final Node nextLeaf() {
-            assert leaf.offset == leaf.node.children.length;
+            assert leafOffset == leafNode.children.length;
             assert cursor < tailOffset();
             
             int i = 0;
@@ -279,8 +280,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 parent = stack[++i];
             }
             parent.offset++;
-            boolean owned = deepestOwned <= i;
-            int newDeepestOwned = owned ? i : deepestOwned;
+            boolean owned = i >= deepestOwned;
+            byte newDeepestOwned = owned ? (byte) i : deepestOwned;
             while (i > 0) {
                 if (owned && (owned = ((ParentNode) parent.node).owns(parent.offset))) {
                     newDeepestOwned--;
@@ -290,13 +291,13 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 child.offset = 0;
                 parent = child;
             }
-            deepestOwned = (owned && ((ParentNode) parent.node).owns(parent.offset)) ? newDeepestOwned-1 : newDeepestOwned;
-            leaf.offset = 0;
-            return leaf.node = (Node) parent.node.children[parent.offset];
+            deepestOwned = (owned && ((ParentNode) parent.node).owns(parent.offset)) ? (byte) (newDeepestOwned-1) : newDeepestOwned;
+            leafOffset = 0;
+            return leafNode = (Node) parent.node.children[parent.offset];
         }
         
         final Node prevLeaf() {
-            assert leaf.offset == 0;
+            assert leafOffset == 0;
             assert cursor > 0;
             
             int i = 0;
@@ -305,8 +306,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 parent = stack[++i];
             }
             parent.offset--;
-            boolean owned = deepestOwned <= i;
-            int newDeepestOwned = owned ? i : deepestOwned;
+            boolean owned = i >= deepestOwned;
+            byte newDeepestOwned = owned ? (byte) i : deepestOwned;
             while (i > 0) {
                 if (owned && (owned = ((ParentNode) parent.node).owns(parent.offset))) {
                     newDeepestOwned--;
@@ -316,19 +317,21 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 child.offset = child.node.children.length-1;
                 parent = child;
             }
-            deepestOwned = (owned && ((ParentNode) parent.node).owns(parent.offset)) ? newDeepestOwned-1 : newDeepestOwned;
-            leaf.node = (Node) parent.node.children[parent.offset];
-            leaf.offset = leaf.node.children.length;
-            return leaf.node;
+            deepestOwned = (owned && ((ParentNode) parent.node).owns(parent.offset)) ? (byte) (newDeepestOwned-1) : newDeepestOwned;
+            leafNode = (Node) parent.node.children[parent.offset];
+            leafOffset = (byte) leafNode.children.length;
+            return leafNode;
         }
         
         final void init(int index) {
             int tailOffset = tailOffset();
             if (index >= tailOffset) {
-                leaf = new Frame(tail, index - tailOffset);
+                leafNode = tail;
+                leafOffset = (byte) (index - tailOffset);
             }
             else if (rootShift == 0) {
-                leaf = new Frame(root, index);
+                leafNode = root;
+                leafOffset = (byte) index;
             }
             else {
                 initStack(index);
@@ -338,9 +341,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         final void initStack(int index) {
             assert rootShift > 0;
             
-            boolean owned = ownsRoot();
             Node curr = root;
-            int shift = rootShift, initDeepestOwned = shift / SHIFT - 1;
+            int shift = rootShift;
             stack = new Frame[shift / SHIFT];
             
             for (int i = stack.length-1; i >= 0; i--, shift -= SHIFT) {
@@ -354,14 +356,13 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                         index -= sizes.get(childIdx-1);
                     }
                 }
-                if (owned && (owned = ((ParentNode) curr).owns(childIdx))) {
-                    initDeepestOwned--;
-                }
                 stack[i] = new Frame(curr, childIdx);
                 curr = (Node) curr.children[childIdx];
             }
-            deepestOwned = initDeepestOwned;
-            leaf = new Frame(curr, index & MASK);
+            
+            leafNode = curr;
+            leafOffset = (byte) (index & MASK);
+            deepestOwned = Byte.MAX_VALUE;
         }
         
         @Override
@@ -391,15 +392,14 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             if (i >= size) {
                 throw new NoSuchElementException();
             }
-            Node leafNode = leaf.node;
-            if (leaf.offset == leafNode.children.length) {
+            if (leafOffset == leafNode.children.length) {
                 if (i == tailOffset()) {
                     if (stack != null) {
                         // Fixup in case we iterate backwards later
                         stack[0].offset++;
                     }
-                    leaf.offset = 0;
-                    leafNode = leaf.node = tail;
+                    leafOffset = 0;
+                    leafNode = tail;
                 }
                 else {
                     leafNode = nextLeaf();
@@ -408,7 +408,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             lastRet = i;
             cursor = i + 1;
             @SuppressWarnings("unchecked")
-            E value = (E) leafNode.children[leaf.offset++];
+            E value = (E) leafNode.children[leafOffset++];
             return value;
         }
         
@@ -419,16 +419,14 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             if (i < 0) {
                 throw new NoSuchElementException();
             }
-            Node leafNode = leaf.node;
-            if (leaf.offset == 0) {
+            if (leafOffset == 0) {
                 if (rootShift == 0) {
-                    leafNode = leaf.node = root;
-                    leaf.offset = i+1;
+                    leafNode = root;
+                    leafOffset = (byte) (i+1);
                 }
                 else if (stack == null) {
                     initStack(i);
-                    leafNode = leaf.node;
-                    leaf.offset++;
+                    leafOffset++;
                 }
                 else {
                     leafNode = prevLeaf();
@@ -437,7 +435,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             lastRet = i;
             cursor = i;
             @SuppressWarnings("unchecked")
-            E value = (E) leafNode.children[--leaf.offset];
+            E value = (E) leafNode.children[--leafOffset];
             return value;
         }
         
@@ -451,15 +449,15 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 return;
             }
             
-            int tailOffset = tailOffset(), j = leaf.offset;
+            int tailOffset = tailOffset(), j = leafOffset;
             i -= j;
-            E[] leafChildren = (E[]) leaf.node.children;
+            E[] leafChildren = (E[]) leafNode.children;
             while (j < leafChildren.length && modCount == expectedModCount) {
                 action.accept(leafChildren[j++]);
             }
             Frame parent = stack != null ? stack[0] : null;
             while ((i += j) < tailOffset && modCount == expectedModCount) {
-                // Stack is not null - else consuming the first leaf would have moved us past tailOffset
+                // Stack is not null here - else consuming the first leaf would have moved us past tailOffset
                 j = 0;
                 while (parent.offset == parent.node.children.length-1) {
                     parent = stack[++j];
@@ -480,9 +478,10 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 if (parent != null) {
                     // Fixup in case we iterate backwards later
                     parent.offset++;
+                    deepestOwned = Byte.MAX_VALUE;
                 }
-                leaf.offset = j = 0;
-                leafChildren = (E[]) (leaf.node = tail).children;
+                j = leafOffset = 0;
+                leafChildren = (E[]) (leafNode = tail).children;
                 while (j < leafChildren.length && modCount == expectedModCount) {
                     action.accept(leafChildren[j++]);
                 }
@@ -501,7 +500,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 throw new IllegalStateException();
             }
             checkForComodification();
-            expectedModCount = ++modCount;
+            expectedModCount = ++modCount; // TODO: Only if we need to copy nodes
             unsafeSet(e);
         }
         
@@ -512,7 +511,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             int i = lastRet;
             int adj = i < cursor ? -1 : 0; // If lastRet < cursor (ie we were traversing forward), need to sub 1 from leaf offset
             if (i >= tailOffset()) {
-                (leaf.node = getEditableTail()).children[leaf.offset + adj] = e;
+                (leafNode = getEditableTail()).children[leafOffset + adj] = e;
                 return;
             }
             // At this point, deepestOwned may be at most stack.length-1, indicating we always own root at least, which
@@ -522,23 +521,23 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             stackCopying: {
                 int j;
                 // TODO: If we maintain a forkId on the iterator and list, we can check that instead of ownsRoot()
-                if (!ownsRoot()) {
+                if (!ownsRoot() || (j = deepestOwned) == Byte.MAX_VALUE) {
                     if (stack == null) { // implies rootShift == 0
-                        (leaf.node = getEditableRoot()).children[leaf.offset + adj] = e;
+                        (leafNode = getEditableRoot()).children[leafOffset + adj] = e;
                         return;
                     }
                     stack[j = stack.length-1].node = getEditableRoot();
                 }
-                else if ((j = deepestOwned) == -1) {
+                else if (j == -1) {
                     break stackCopying;
                 }
                 for (; j > 0; j--) {
                     stack[j-1].node = stack[j].node.getEditableChild(stack[j].offset);
                 }
-                leaf.node = stack[0].node.getEditableChild(stack[0].offset);
+                leafNode = stack[0].node.getEditableChild(stack[0].offset);
                 deepestOwned = -1;
             }
-            leaf.node.children[leaf.offset + adj] = e;
+            leafNode.children[leafOffset + adj] = e;
         }
         
         @Override
@@ -546,12 +545,12 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             checkForComodification();
             
             try {
-                // TODO: Invalidate or refresh stack
                 int i = cursor;
                 TrieForkJoinList.this.add(i, e);
                 cursor = i + 1;
                 lastRet = -1;
                 expectedModCount = modCount;
+                init(cursor); // Possibly refresh stack
             } catch (IndexOutOfBoundsException ex) {
                 throw new ConcurrentModificationException();
             }
@@ -565,11 +564,11 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             checkForComodification();
             
             try {
-                // TODO: Invalidate or refresh stack
                 TrieForkJoinList.this.remove(lastRet);
                 cursor = lastRet;
                 lastRet = -1;
                 expectedModCount = modCount;
+                init(cursor); // Possibly refresh stack
             } catch (IndexOutOfBoundsException ex) {
                 throw new ConcurrentModificationException();
             }
