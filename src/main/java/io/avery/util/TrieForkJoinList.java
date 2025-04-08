@@ -148,9 +148,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         tail = toCopy.tail;
     }
     
-    // listIterator(index)
-    //  add(element)
-    //  remove()
     // subList(from, to)
     // spliterator()
     
@@ -163,6 +160,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     // -retainAll(collection)
     // -iterator()
     // -listIterator()
+    // -listIterator(index)
     // -addAll(collection)
     // -addAll(index, collection)
     // -get(index)
@@ -264,9 +262,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             cursor = index;
             init(index);
         }
-        
-        // TODO:
-        //  - set() invalidate the stack if we were in the stack and had to take ownership of any nodes.
         
         final void checkForComodification() {
             if (modCount != expectedModCount) {
@@ -504,31 +499,32 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 throw new IllegalStateException();
             }
             checkForComodification();
-            expectedModCount = ++modCount; // TODO: Only if we need to copy nodes
-            unsafeSet(e);
+            if (unsafeSet(e)) {
+                expectedModCount = ++modCount;
+            }
         }
         
         // Used by removeIf() and batchRemove(). This method skips checks and does not update modCount.
-        private void unsafeSet(E e) {
+        // Returns true if any nodes needed to be copied (ie there was a "structural modification").
+        private boolean unsafeSet(E e) {
             assert lastRet >= 0;
             
             int i = lastRet;
             int adj = i < cursor ? -1 : 0; // If lastRet < cursor (ie we were traversing forward), need to sub 1 from leaf offset
+            Node oldLeafNode = leafNode;
             if (i >= tailOffset()) {
-                (leafNode = getEditableTail()).children[leafOffset + adj] = e;
-                return;
+                leafNode = getEditableTail();
             }
-            stackCopying: {
+            else if (stack == null) { // implies rootShift == 0
+                leafNode = getEditableRoot();
+            }
+            else stackCopying: {
                 int j;
                 if (expectedForkId != forkId || (j = deepestOwned) == Byte.MAX_VALUE) {
                     // Either deepestOwned is unset (if this is our first time calling set(), or
                     // add()/remove()/forEachRemaining() invalidated it), or we can't trust it because
                     // part or all of the list was forked.
                     expectedForkId = forkId;
-                    if (stack == null) { // implies rootShift == 0
-                        (leafNode = getEditableRoot()).children[leafOffset + adj] = e;
-                        return;
-                    }
                     stack[j = stack.length-1].node = getEditableRoot();
                 }
                 else if (j == -1) {
@@ -541,6 +537,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 deepestOwned = -1;
             }
             leafNode.children[leafOffset + adj] = e;
+            return oldLeafNode != leafNode;
         }
         
         @Override
@@ -867,15 +864,17 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     @Override
     public E set(int index, E element) {
         Objects.checkIndex(index, size);
-        modCount++;
         int tailOffset = tailOffset();
+        Object oldLeaf;
         Node leaf;
         
         if (index >= tailOffset) {
+            oldLeaf = tail;
             leaf = getEditableTail();
             index -= tailOffset;
         }
         else {
+            oldLeaf = root;
             leaf = getEditableRoot();
             for (int shift = rootShift; shift > 0; shift -= SHIFT) {
                 int childIdx = (index >>> shift) & MASK;
@@ -888,9 +887,14 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                         index -= sizes.get(childIdx-1);
                     }
                 }
+                oldLeaf = leaf.children[childIdx];
                 leaf = leaf.getEditableChild(childIdx);
             }
             index &= MASK;
+        }
+        
+        if (oldLeaf != leaf) {
+            modCount++;
         }
         
         @SuppressWarnings("unchecked")
