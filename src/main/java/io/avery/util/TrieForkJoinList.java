@@ -5,14 +5,13 @@ import java.util.*;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 
-// TODO: Implement RandomAccess?
 // TODO: can rootShift get too big? (ie shift off the entire index -> 0, making later elements unreachable)
 //  - I think the answer is "yes, but we'd still find later elements by linear searching a size table"
 // TODO: Shifts (right and left) can wrap! eg: (int >>> 35) == (int >>> 3);  (int << 35) == (int << 3)
 //  - Force result to 0 when shift is too big
 // TODO: Throw OOME when index size limit exceeded
 
-public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList<E> {
+public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList<E>, RandomAccess {
     /* Implements a variant of Relaxed Radix Balanced (RRB) Tree, a data structure proposed by Bagwell & Rompf
      * [https://infoscience.epfl.ch/server/api/core/bitstreams/e5d662ea-1e8d-4dda-b917-8cbb8bb40bf9/content]
      * and further elaborated by L'orange [https://hypirion.com/thesis.pdf].
@@ -2550,8 +2549,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         return "Index: "+index+", Size: "+size;
     }
     
-    // TODO: Implement RandomAccess?
-    private static class SubList<E> extends AbstractList<E> implements ForkJoinList<E> {
+    private static class SubList<E> extends AbstractList<E> implements ForkJoinList<E>, RandomAccess {
         private final TrieForkJoinList<E> root;
         private final SubList<E> parent;
         private final int offset;

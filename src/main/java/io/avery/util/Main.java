@@ -32,10 +32,9 @@ public class Main {
         List<Integer> list = new TrieForkJoinList<>(bootstrap);
 //        List<Integer> list = new LinkedList<>(bootstrap);
 //        Instant start = Instant.now();
-//        for (int i = 0; i < 100_000_000; i++) {
-//            list.add(i);
-//        }
-//        Instant end = Instant.now();
+        for (int i = 0; i < 100_000_000; i++) {
+            list.add(0, i);
+        }
         Instant start = Instant.now();
         var state = new Object(){ long sum = 0; };
         list.iterator().forEachRemaining(i -> state.sum += i);
