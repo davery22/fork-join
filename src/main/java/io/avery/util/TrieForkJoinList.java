@@ -55,7 +55,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                        // TODO: Maybe store this in the rootShift? Or make rootShift narrower
     
     // This id is copied by ListIterators and compared during ListIterator.set() to detect if a fork() has happened
-    // (including a sublist fork()), which conservatively invalidates ownership of nodes in the iterator stack.
+    // (including a sublist fork()), which would conservatively invalidate ownership of nodes in the iterator stack.
     private Object forkId = INITIAL_FORK_ID;
     
     private boolean ownsTail() {
@@ -147,11 +147,9 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         tail = toCopy.tail;
     }
     
-    // subList(from, to)
-    // spliterator()
     
     // TODO: Make sure we handle modCount
-    //  - not to mention 'range' variants
+    
     // -toArray()
     // -toArray(arr)
     // -removeIf(predicate)
@@ -173,51 +171,38 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     // -fork()
     // -join(collection)
     // -join(index, collection)
+    // -subList(from, to)
+    // -spliterator()
     
     // TODO: Some of these might need revisited just to handle modCount - see ArrayList
-    //  - not to mention 'range' variants
+    
     // -toArray(gen) - Collection
     // -addFirst() - List
     // -addLast() - List
     // -contains(object) - AbstractCollection
     // -containsAll(collection) - AbstractCollection
-    // -equals(object) - AbstractList
+    // -equals(object) - AbstractList (does not short-circuit on size...)
     // -getFirst() - List
     // -getLast() - List
-    // -hashCode() - AbstractList
+    // -hashCode() - AbstractList (uses step-wise iteration, not forEachRemaining()...)
     // -indexOf() - AbstractList
     // -isEmpty() - AbstractCollection
     // -lastIndexOf() - AbstractList
     // -remove(object) - AbstractCollection
-    // -removeFirst() - List
-    // -removeLast() - List
+    // -removeFirst() - List (maybe improve)
+    // -removeLast() - List (maybe improve)
     // -replaceAll(unaryOp) - List
     // -sort(comparator) - List
     // -toString() - AbstractCollection
-    // -forEach(action) - Iterable
+    // -forEach(action) - Iterable (uses step-wise iteration, not forEachRemaining()...)
     // -stream() - Collection
     // -parallelStream() - Collection
     
     
-    // set(i, el) must be a co-mod IF it actually copies
-    //  - it can lose concurrent updates happening at a different location
-    //    (eg 2 threads are trying to set under a shared root, both copy root, one wins)
-    // fork() should be safe
-    //  - if fork races a mutation,
-    //    - if the mutation does any copying, it should increment the modCount
-    //    - else the mutation got there first (and fork disowned after)
-    //    - with multiple levels, what matters is whether fork got to a given node last (node ends up disowned)
-    //    - if fork got there first, mutation may still see owned, and races to update 'shared' nodes, which may be
-    //      visible to forked list. This may lead to corruption / non-CME exceptions as data read by forked list changes
-    //      out from under it (eg node sizes...).
-    //
     // Pros of custom iterator:
     //  - faster iteration - no need to traverse down on each advance
     //  - faster set - no need to traverse down each time
-    //  - potentially faster add/remove, if we can sometimes bypass rebalancing
     // Cons of custom iterator:
-    //  - sublist forking needs to be a co-mod to avoid silently invalidating iterator stacks
-    //    - or, needs to update a forkId field that iterator can check against
     //  - iterator retains a strong reference to root (even after external co-mod), preventing GC
     
     
@@ -233,6 +218,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
 
     @Override
     public ListIterator<E> listIterator(int index) {
+        rangeCheckForAdd(index);
         return new ListItr(index);
     }
     
@@ -241,34 +227,93 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         Frame(Node node, int offset) { this.node = node; this.offset = offset; }
     }
     
-    // TODO: See if this is actually faster than consecutive get(index)
-    //  Update: Needs a proper benchmark, but for iteration across 100M elements:
-    //                            |  iteration only  |  iteration + setting  |  forEachRemaining  (seconds)
-    //   ArrayList                |  0.13            |  1.10                 |  0.08
-    //   TFJL w/ custom iterator  |  0.32            |  1.58 (1.22?)         |  0.27 (0.13 optimized)
-    //   TFJL w/ default iterator |  0.88 (best)     |  4.99 (4.22?) (best)  |  0.86
-    private class ListItr implements ListIterator<E> {
+    // Inherited by ListItr and Splitr
+    private abstract class ItrBase {
         Frame[] stack;
         Node leafNode;
         byte leafOffset;
-        byte deepestOwned = Byte.MAX_VALUE;
-        int cursor;
-        int lastRet = -1;
-        int expectedModCount = modCount;
-        Object expectedForkId = forkId;
+        int expectedModCount;
         
-        ListItr(int index) {
-            cursor = index;
-            init(index);
+        ItrBase(int expectedModCount) {
+            this.expectedModCount = expectedModCount;
         }
         
-        final void checkForComodification() {
+        void init(int index) {
+            int tailOffset = tailOffset();
+            if (index >= tailOffset) {
+                leafNode = tail;
+                leafOffset = (byte) (index - tailOffset);
+            }
+            else if (rootShift == 0) {
+                leafNode = root;
+                leafOffset = (byte) index;
+            }
+            else {
+                initStack(index);
+            }
+        }
+        
+        void initStack(int index) {
+            assert rootShift > 0;
+            
+            Node curr = root;
+            int shift = rootShift;
+            stack = new Frame[shift / SHIFT];
+            
+            for (int i = stack.length-1; i >= 0; i--, shift -= SHIFT) {
+                int childIdx = (index >>> shift) & MASK;
+                if (curr instanceof SizedParentNode sn) {
+                    Sizes sizes = sn.sizes();
+                    while (sizes.get(childIdx) <= index) {
+                        childIdx++;
+                    }
+                    if (childIdx != 0) {
+                        index -= sizes.get(childIdx-1);
+                    }
+                }
+                stack[i] = new Frame(curr, childIdx);
+                curr = (Node) curr.children[childIdx];
+            }
+            
+            leafNode = curr;
+            leafOffset = (byte) (index & MASK);
+            resetDeepestOwned();
+        }
+        
+        void checkForComodification() {
             if (modCount != expectedModCount) {
                 throw new ConcurrentModificationException();
             }
         }
         
-        final Node nextLeaf() {
+        // Overridden by ListItr to reset the deepestOwned field (read by ListItr.set())
+        void resetDeepestOwned() { }
+    }
+    
+    // TODO: See if this is actually faster than consecutive get(index)
+    //  Update: Needs a proper benchmark, but for iteration across 100M elements:
+    //                            |  iteration only  |  iteration + setting  |  forEachRemaining  (seconds)
+    //   ArrayList                |  0.13            |  1.10                 |  0.08
+    //   TFJL w/ custom iterator  |  0.32            |  1.32                 |  0.13
+    //   TFJL w/ default iterator |  0.88 (best)     |  4.99 (4.22?) (best)  |  0.86
+    private class ListItr extends ItrBase implements ListIterator<E> {
+        int cursor;
+        int lastRet = -1;
+        byte deepestOwned = Byte.MAX_VALUE;
+        Object expectedForkId = forkId;
+        
+        ListItr(int index) {
+            super(modCount);
+            cursor = index;
+            init(index);
+        }
+        
+        @Override
+        void resetDeepestOwned() {
+            deepestOwned = Byte.MAX_VALUE;
+        }
+        
+        Node nextLeaf() {
             assert leafOffset == leafNode.children.length;
             assert cursor < tailOffset();
             
@@ -294,7 +339,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             return leafNode = (Node) parent.node.children[parent.offset];
         }
         
-        final Node prevLeaf() {
+        Node prevLeaf() {
             assert leafOffset == 0;
             assert cursor > 0;
             
@@ -319,48 +364,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             leafNode = (Node) parent.node.children[parent.offset];
             leafOffset = (byte) leafNode.children.length;
             return leafNode;
-        }
-        
-        final void init(int index) {
-            int tailOffset = tailOffset();
-            if (index >= tailOffset) {
-                leafNode = tail;
-                leafOffset = (byte) (index - tailOffset);
-            }
-            else if (rootShift == 0) {
-                leafNode = root;
-                leafOffset = (byte) index;
-            }
-            else {
-                initStack(index);
-            }
-        }
-        
-        final void initStack(int index) {
-            assert rootShift > 0;
-            
-            Node curr = root;
-            int shift = rootShift;
-            stack = new Frame[shift / SHIFT];
-            
-            for (int i = stack.length-1; i >= 0; i--, shift -= SHIFT) {
-                int childIdx = (index >>> shift) & MASK;
-                if (curr instanceof SizedParentNode sn) {
-                    Sizes sizes = sn.sizes();
-                    while (sizes.get(childIdx) <= index) {
-                        childIdx++;
-                    }
-                    if (childIdx != 0) {
-                        index -= sizes.get(childIdx-1);
-                    }
-                }
-                stack[i] = new Frame(curr, childIdx);
-                curr = (Node) curr.children[childIdx];
-            }
-            
-            leafNode = curr;
-            leafOffset = (byte) (index & MASK);
-            deepestOwned = Byte.MAX_VALUE;
         }
         
         @Override
@@ -476,7 +479,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 if (parent != null) {
                     // Fixup in case we iterate backwards later
                     parent.offset++;
-                    deepestOwned = Byte.MAX_VALUE;
+                    resetDeepestOwned();
                 }
                 j = leafOffset = 0;
                 leafChildren = (E[]) (leafNode = tail).children;
@@ -484,6 +487,58 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                     action.accept(leafChildren[j++]);
                 }
                 i += j;
+            }
+            
+            // Update once at end to reduce heap write traffic.
+            cursor = i;
+            lastRet = i - 1;
+            checkForComodification();
+        }
+        
+        // Overload used by subList ListIterator - takes an explicit end index
+        @SuppressWarnings("unchecked")
+        public void forEachRemaining(Consumer<? super E> action, int hi) {
+            Objects.requireNonNull(action);
+            int i = cursor;
+            if (i >= hi) {
+                return;
+            }
+            
+            int tailFence = Math.min(tailOffset(), hi), j = leafOffset;
+            E[] leafChildren = (E[]) leafNode.children;
+            for (; j < leafChildren.length && i < hi && modCount == expectedModCount; i++) {
+                action.accept(leafChildren[j++]);
+            }
+            Frame parent = stack != null ? stack[0] : null;
+            while (i < tailFence && modCount == expectedModCount) {
+                // Stack is not null here - else consuming the first leaf would have moved us past tailOffset
+                j = 0;
+                while (parent.offset == parent.node.children.length-1) {
+                    parent = stack[++j];
+                }
+                parent.offset++;
+                while (j > 0) {
+                    Frame child = stack[--j];
+                    child.node = (Node) parent.node.children[parent.offset];
+                    child.offset = 0;
+                    parent = child;
+                }
+                leafChildren = (E[]) ((Node) (parent.node.children[parent.offset])).children;
+                for (; j < leafChildren.length && i < hi && modCount == expectedModCount; i++) {
+                    action.accept(leafChildren[j++]);
+                }
+            }
+            if (i < hi) {
+                if (parent != null) {
+                    // Fixup in case we iterate backwards later
+                    parent.offset++;
+                    resetDeepestOwned();
+                }
+                j = leafOffset = 0;
+                leafChildren = (E[]) (leafNode = tail).children;
+                for (; j < leafChildren.length && i < hi && modCount == expectedModCount; i++) {
+                    action.accept(leafChildren[j++]);
+                }
             }
             
             // Update once at end to reduce heap write traffic.
@@ -572,6 +627,151 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 throw new ConcurrentModificationException();
             }
         }
+    }
+    
+    class Splitr extends ItrBase implements Spliterator<E> {
+        int index; // current index, modified on advance/split
+        int fence; // -1 until used; then one past last index
+        
+        Splitr(int origin, int fence, int expectedModCount) {
+            super(expectedModCount);
+            this.index = origin;
+            this.fence = fence;
+        }
+        
+        int getFence() {
+            int hi = fence;
+            if (hi < 0) {
+                expectedModCount = modCount;
+                hi = fence = size;
+            }
+            return hi;
+        }
+        
+        Node nextLeaf() {
+            assert leafOffset == leafNode.children.length;
+            assert index < tailOffset();
+            
+            int i = 0;
+            Frame parent = stack[0];
+            while (parent.offset == parent.node.children.length-1) {
+                parent = stack[++i];
+            }
+            parent.offset++;
+            while (i > 0) {
+                Frame child = stack[--i];
+                child.node = (Node) parent.node.children[parent.offset];
+                child.offset = 0;
+                parent = child;
+            }
+            leafOffset = 0;
+            return leafNode = (Node) parent.node.children[parent.offset];
+        }
+        
+        @Override
+        public boolean tryAdvance(Consumer<? super E> action) {
+            Objects.requireNonNull(action);
+            int hi = getFence(), i = index;
+            if (i >= hi) {
+                return false;
+            }
+            if (leafNode == null) {
+                init(i);
+            }
+            if (leafOffset == leafNode.children.length) {
+                if (i == tailOffset()) {
+                    leafOffset = 0;
+                    leafNode = tail;
+                }
+                else {
+                    leafNode = nextLeaf();
+                }
+            }
+            index = i + 1;
+            @SuppressWarnings("unchecked")
+            E value = (E) leafNode.children[leafOffset++];
+            action.accept(value);
+            checkForComodification();
+            return true;
+        }
+        
+        @Override
+        @SuppressWarnings("unchecked")
+        public void forEachRemaining(Consumer<? super E> action) {
+            Objects.requireNonNull(action);
+            int hi = getFence(), i = index;
+            if (i >= hi) {
+                return;
+            }
+            if (leafNode == null) {
+                init(i);
+            }
+            
+            int tailFence = Math.min(tailOffset(), hi), j = leafOffset;
+            E[] leafChildren = (E[]) leafNode.children;
+            for (; j < leafChildren.length && i < hi; i++) {
+                action.accept(leafChildren[j++]);
+            }
+            Frame parent = stack != null ? stack[0] : null;
+            while (i < tailFence) {
+                // Stack is not null here - else consuming the first leaf would have moved us past tailOffset
+                j = 0;
+                while (parent.offset == parent.node.children.length-1) {
+                    parent = stack[++j];
+                }
+                parent.offset++;
+                while (j > 0) {
+                    Frame child = stack[--j];
+                    child.node = (Node) parent.node.children[parent.offset];
+                    child.offset = 0;
+                    parent = child;
+                }
+                leafChildren = (E[]) ((Node) (parent.node.children[parent.offset])).children;
+                for (; j < leafChildren.length && i < hi; i++) {
+                    action.accept(leafChildren[j++]);
+                }
+            }
+            if (i < hi) {
+                j = 0;
+                leafChildren = (E[]) tail.children;
+                for (; j < leafChildren.length && i < hi; i++) {
+                    action.accept(leafChildren[j++]);
+                }
+            }
+            
+            index = hi;
+            stack = null;
+            leafNode = null;
+            checkForComodification();
+        }
+        
+        @Override
+        public Spliterator<E> trySplit() {
+            int hi = getFence(), lo = index, mid = (lo + hi) >>> 1;
+            if (lo >= mid) {
+                // Range too small
+                return null;
+            }
+            // Going to split - invalidate current position
+            stack = null;
+            leafNode = null;
+            return new Splitr(lo, index = mid, expectedModCount);
+        }
+        
+        @Override
+        public long estimateSize() {
+            return getFence() - index;
+        }
+        
+        @Override
+        public int characteristics() {
+            return Spliterator.ORDERED | Spliterator.SIZED | Spliterator.SUBSIZED;
+        }
+    }
+    
+    @Override
+    public Spliterator<E> spliterator() {
+        return new Splitr(0, -1, 0);
     }
     
     @Override
@@ -858,6 +1058,33 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         @SuppressWarnings("unchecked")
         E value = (E) leaf.children[index];
         return value;
+    }
+    
+    @Override
+    @SuppressWarnings("unchecked")
+    public E getFirst() {
+        int ts = tailSize;
+        if (ts == 0) {
+            throw new NoSuchElementException();
+        }
+        if (ts == size) {
+            return (E) tail.children[0];
+        }
+        Node leaf = root;
+        for (int shift = rootShift; shift > 0; shift -= SHIFT) {
+            leaf = (Node) leaf.children[0];
+        }
+        return (E) leaf.children[0];
+    }
+    
+    @Override
+    @SuppressWarnings("unchecked")
+    public E getLast() {
+        int ts = tailSize;
+        if (ts == 0) {
+            throw new NoSuchElementException();
+        }
+        return (E) tail.children[ts-1];
     }
     
     @Override
@@ -2572,50 +2799,97 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         
         @Override
-        public Object[] toArray() {
-            return root.toArray(new Object[size], offset, offset + size);
-        }
-        
-        @Override
-        public <T> T[] toArray(T[] a) {
-            return root.toArray(a, offset, offset + size);
-        }
-        
-        @Override
-        public boolean join(Collection<? extends E> other) {
-            return root.join(offset, other);
-        }
-        
-        @Override
-        public boolean join(int index, Collection<? extends E> other) {
-            return root.join(offset + index, other);
-        }
-        
-        @Override
         public ForkJoinList<E> fork() {
+            checkForComodification();
             return root.forkRange(offset, offset + size);
         }
         
         @Override
         public E get(int index) {
+            Objects.checkIndex(index, size);
+            checkForComodification();
             return root.get(offset + index);
         }
         
         @Override
+        public E set(int index, E element) {
+            Objects.checkIndex(index, size);
+            checkForComodification();
+            int oldModCount = root.modCount;
+            E old = root.set(offset + index, element);
+            if (oldModCount != root.modCount) {
+                updateSizeAndModCount(0);
+            }
+            return old;
+        }
+        
+        @Override
         public int size() {
+            checkForComodification();
             return size;
         }
         
         @Override
-        public boolean removeIf(Predicate<? super E> filter) {
+        public void add(int index, E element) {
+            rangeCheckForAdd(index);
             checkForComodification();
-            int oldSize = root.size;
-            boolean modified = root.removeIf(filter, offset, offset + size);
-            if (modified) {
-                updateSizeAndModCount(root.size - oldSize);
-            }
-            return modified;
+            root.add(offset + index, element);
+            updateSizeAndModCount(1);
         }
+        
+        @Override
+        public E remove(int index) {
+            Objects.checkIndex(index, size);
+            checkForComodification();
+            E result = root.remove(offset + index);
+            updateSizeAndModCount(-1);
+            return result;
+        }
+        
+        @Override
+        protected void removeRange(int fromIndex, int toIndex) {
+            checkForComodification();
+            root.removeRange(offset + fromIndex, offset + toIndex);
+            updateSizeAndModCount(fromIndex - toIndex);
+        }
+        
+        @Override
+        public boolean addAll(Collection<? extends E> c) {
+            return addAll(size, c);
+        }
+        
+        @Override
+        public boolean addAll(int index, Collection<? extends E> c) {
+            rangeCheckForAdd(index);
+            int cSize = c.size();
+            if (cSize == 0) {
+                return false;
+            }
+            checkForComodification();
+            root.addAll(offset + index, c);
+            updateSizeAndModCount(cSize);
+            return true;
+        }
+        
+        @Override
+        public boolean join(Collection<? extends E> c) {
+            return join(size, c);
+        }
+        
+        @Override
+        public boolean join(int index, Collection<? extends E> c) {
+            rangeCheckForAdd(index);
+            int cSize = c.size();
+            if (cSize == 0) {
+                return false;
+            }
+            checkForComodification();
+            root.join(offset + index, c);
+            updateSizeAndModCount(cSize);
+            return true;
+        }
+        
+        // replaceAll
         
         @Override
         public boolean removeAll(Collection<?> c) {
@@ -2638,14 +2912,130 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         
         @Override
-        protected void removeRange(int fromIndex, int toIndex) {
-            root.removeRange(offset + fromIndex, offset + toIndex);
+        public boolean removeIf(Predicate<? super E> filter) {
+            checkForComodification();
+            int oldSize = root.size;
+            boolean modified = root.removeIf(filter, offset, offset + size);
+            if (modified) {
+                updateSizeAndModCount(root.size - oldSize);
+            }
+            return modified;
+        }
+        
+        @Override
+        public Object[] toArray() {
+            checkForComodification();
+            return root.toArray(new Object[size], offset, offset + size);
+        }
+        
+        @Override
+        public <T> T[] toArray(T[] a) {
+            checkForComodification();
+            return root.toArray(a, offset, offset + size);
+        }
+        
+        // equals
+        // hashCode
+        // indexOf
+        // lastIndexOf
+        // contains
+        
+        @Override
+        public Iterator<E> iterator() {
+            return listIterator();
+        }
+        
+        @Override
+        public ListIterator<E> listIterator(int index) {
+            checkForComodification();
+            rangeCheckForAdd(index);
+            
+            return root.new ListItr(offset + index) {
+                @Override
+                public boolean hasNext() {
+                    return nextIndex() < size;
+                }
+                
+                @Override
+                public boolean hasPrevious() {
+                    return previousIndex() >= 0;
+                }
+                
+                @Override
+                public int nextIndex() {
+                    return super.nextIndex() - offset;
+                }
+                
+                @Override
+                public int previousIndex() {
+                    return super.previousIndex() - offset;
+                }
+                
+                @Override
+                public E next() {
+                    if (!hasNext()) {
+                        throw new NoSuchElementException();
+                    }
+                    return super.next();
+                }
+                
+                @Override
+                public E previous() {
+                    if (!hasPrevious()) {
+                        throw new NoSuchElementException();
+                    }
+                    return super.previous();
+                }
+                
+                @Override
+                public void forEachRemaining(Consumer<? super E> action) {
+                    super.forEachRemaining(action, offset + size);
+                }
+                
+                @Override
+                public void set(E e) {
+                    int oldModCount = root.modCount;
+                    super.set(e);
+                    if (oldModCount != root.modCount) {
+                        updateSizeAndModCount(0);
+                    }
+                }
+                
+                @Override
+                public void add(E e) {
+                    super.add(e);
+                    updateSizeAndModCount(1);
+                }
+                
+                @Override
+                public void remove() {
+                    super.remove();
+                    updateSizeAndModCount(-1);
+                }
+            };
         }
         
         @Override
         public ForkJoinList<E> subList(int fromIndex, int toIndex) {
             subListRangeCheck(fromIndex, toIndex, size);
             return new SubList<>(this, fromIndex, toIndex);
+        }
+        
+        @Override
+        public Spliterator<E> spliterator() {
+            checkForComodification();
+            
+            return root.new Splitr(offset, -1, 0) {
+                @Override
+                int getFence() {
+                    int hi = fence;
+                    if (hi < 0) {
+                        expectedModCount = SubList.this.modCount;
+                        hi = fence = offset + SubList.this.size;
+                    }
+                    return hi;
+                }
+            };
         }
         
         private void rangeCheckForAdd(int index) {
@@ -2659,7 +3049,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         
         private void checkForComodification() {
-            if (root.modCount != this.modCount) {
+            if (root.modCount != modCount) {
                 throw new ConcurrentModificationException();
             }
         }
