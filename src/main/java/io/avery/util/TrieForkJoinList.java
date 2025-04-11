@@ -47,10 +47,9 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     private Node root;
     private Node tail;
     private int size;
-    private int tailSize;
-    private int rootShift;
+    private byte tailSize;
+    private byte rootShift;
     private byte owns; // only need 2 bits - for root and tail
-                       // TODO: Maybe store this in the rootShift? Or make rootShift narrower
     
     // This id is copied by ListIterators and compared during ListIterator.set() to detect if a fork() has happened
     // (including a sublist fork()), which would conservatively invalidate ownership of nodes in the iterator stack.
@@ -125,14 +124,14 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         claimTail();
         if (numNew <= SPAN) {
             tail = new Node(arr.clone());
-            size = tailSize = numNew;
+            size = tailSize = (byte) numNew;
             return;
         }
         claimRoot();
         root = new Node(Arrays.copyOf(arr, SPAN));
         int offset = numNew - SPAN > SPAN ? directAppend(arr, SPAN, AppendMode.NEVER_EMPTY_SRC) : SPAN;
         Object[] newTailChildren = new Object[SPAN];
-        System.arraycopy(arr, offset, newTailChildren, 0, tailSize = numNew - offset);
+        System.arraycopy(arr, offset, newTailChildren, 0, tailSize = (byte) (numNew - offset));
         tail = new Node(newTailChildren);
         size = numNew;
     }
@@ -791,7 +790,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         claimTail();
         Object[] newTailChildren = new Object[SPAN];
-        System.arraycopy(arr, offset, newTailChildren, 0, tailSize = numNew - offset);
+        System.arraycopy(arr, offset, newTailChildren, 0, tailSize = (byte) (numNew - offset));
         tail = new Node(newTailChildren);
         size += remaining;
         return true;
@@ -819,7 +818,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 System.arraycopy(leftTail.children, tailIdx, leftTail.children, tailIdx + numNew, tailSize - tailIdx);
                 System.arraycopy(arr, 0, leftTail.children, tailIdx, numNew);
                 size += numNew;
-                tailSize = newTailSize;
+                tailSize = (byte) newTailSize;
                 return true;
             }
             
@@ -849,7 +848,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 System.arraycopy(arr, takeRight, newChildren, 0, remainingRight);
                 tail = new Node(newChildren);
                 size = oldSize + numNew;
-                tailSize = newTailSize;
+                tailSize = (byte) newTailSize;
                 return true;
             }
             
@@ -865,7 +864,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             pushDownTail();
             tail = new Node(newChildren2);
             size += remainingLeft;
-            tailSize = remainingLeft;
+            tailSize = (byte) remainingLeft;
             return true;
         }
         
@@ -900,7 +899,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         // Append elements onto left (using an auxiliary list around the left split node)
         TrieForkJoinList<E> left = new TrieForkJoinList<>();
         left.claimRoot();
-        left.rootShift = rootShifts[0];
+        left.rootShift = (byte) rootShifts[0];
         left.root = splitRoots[0];
         left.directAppend(arr, 0, AppendMode.ALWAYS_EMPTY_SRC);
         
@@ -1176,7 +1175,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         // Append element onto left (using an auxiliary list around the left split node)
         TrieForkJoinList<E> left = new TrieForkJoinList<>();
         left.claimRoot();
-        left.rootShift = rootShifts[0];
+        left.rootShift = (byte) rootShifts[0];
         left.root = splitRoots[0];
         left.directAppend(new Object[]{ element }, 0, AppendMode.ALWAYS_EMPTY_SRC);
         
@@ -1283,7 +1282,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             else {
                 tail.children[0] = null;
             }
-            tailSize = size = 0;
+            size = tailSize = 0;
         }
         else {
             pullUpTail();
@@ -1299,7 +1298,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         int oldRootShift = rootShift;
         if (oldRootShift == 0) {
             claimOrDisownTail(ownsRoot());
-            tailSize = (tail = root).children.length;
+            tailSize = (byte) (tail = root).children.length;
             root = null;
             return;
         }
@@ -1321,7 +1320,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             if (shift == SHIFT) {
                 // Promote last child to tail
                 claimOrDisownTail(owned);
-                tailSize = (tail = (Node) node.children[lastIdx]).children.length;
+                tailSize = (byte) (tail = (Node) node.children[lastIdx]).children.length;
                 break;
             }
             node = (ParentNode) node.children[lastIdx];
@@ -1424,7 +1423,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 newRoot.claim(0);
             }
             root = node = newRoot;
-            rootShift = deepestNonFullAncestorShift;
+            rootShift = (byte) deepestNonFullAncestorShift;
         }
         else if (deepestNonFullAncestorShift == oldRootShift) {
             // Claim root - it is the deepest non-full ancestor
@@ -1616,7 +1615,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             }
             
             root = node;
-            rootShift = shift;
+            rootShift = (byte) shift;
         }
         
         // Finally, fill up the tree from the bottom, in node-sized chunks.
@@ -1784,7 +1783,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 // Starts and ends in the tail
                 Node newTail = getEditableTail();
                 int oldTailSize = tailSize, tailIdx = toIndex - tailOffset;
-                int newTailSize = tailSize = oldTailSize - rangeSize;
+                int newTailSize = tailSize = (byte) (oldTailSize - rangeSize);
                 System.arraycopy(newTail.children, tailIdx, newTail.children, fromIndex - tailOffset, oldTailSize - tailIdx);
                 Arrays.fill(newTail.children, newTailSize, oldTailSize, null);
                 return;
@@ -1795,7 +1794,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             if (toIndex != tailOffset) {
                 Node newTail = getEditableTail();
                 int oldTailSize = tailSize, tailIdx = toIndex - tailOffset;
-                int newTailSize = tailSize = oldTailSize - tailIdx;
+                int newTailSize = tailSize = (byte) (oldTailSize - tailIdx);
                 System.arraycopy(newTail.children, tailIdx, newTail.children, 0, newTailSize);
                 Arrays.fill(newTail.children, newTailSize, oldTailSize, null);
             }
@@ -1836,7 +1835,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 return;
             }
             int oldTailSize = tailSize;
-            int newTailSize = tailSize = fromIndex - tailOffset;
+            int newTailSize = tailSize = (byte) (fromIndex - tailOffset);
             Node newTail = getEditableTail();
             Arrays.fill(newTail.children, newTailSize, oldTailSize, null);
             return;
@@ -1862,7 +1861,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             rootShift = 0;
             root = null;
             int oldTailSize = tailSize;
-            tailSize = newSize;
+            tailSize = (byte) newSize;
             Node newTail = getEditableTail();
             System.arraycopy(newTail.children, oldTailSize - newSize, newTail.children, 0, newSize);
             Arrays.fill(newTail.children, newSize, oldTailSize, null);
@@ -1976,7 +1975,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 Object[] newTailChildren = new Object[SPAN];
                 System.arraycopy(tail.children, fromIndex - tailOffset, newTailChildren, 0, newSize);
                 newList.tail = new Node(newTailChildren);
-                newList.tailSize = newSize;
+                newList.tailSize = (byte) newSize;
                 return newList;
             }
             
@@ -1987,7 +1986,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             }
             else {
                 // Starts in the root, ends in the tail
-                int newTailSize = newList.tailSize = toIndex - tailOffset;
+                int newTailSize = newList.tailSize = (byte) (toIndex - tailOffset);
                 newList.claimTail();
                 Object[] newTailChildren = new Object[SPAN];
                 System.arraycopy(tail.children, 0, newTailChildren, 0, newTailSize);
@@ -2022,7 +2021,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 newList.pullUpTail();
                 return newList;
             }
-            int newTailSize = newList.tailSize = toIndex - tailOffset;
+            int newTailSize = newList.tailSize = (byte) (toIndex - tailOffset);
             newList.claimTail();
             Object[] newTailChildren = new Object[SPAN];
             System.arraycopy(tail.children, 0, newTailChildren, 0, newTailSize);
@@ -2048,7 +2047,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         TrieForkJoinList<E> newList = new TrieForkJoinList<>();
         int newSize = newList.size = size - fromIndex;
         if (newSize <= tailSize) {
-            newList.tailSize = newSize;
+            newList.tailSize = (byte) newSize;
             newList.claimTail();
             Object[] newTailChildren = new Object[SPAN];
             System.arraycopy(tail.children, tailSize - newSize, newTailChildren, 0, newSize);
@@ -2066,7 +2065,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     private static <E> Node forkPrefixRec(int toIndex, TrieForkJoinList<E> newList, Node node, int shift, boolean isLeftmost, boolean isOwned) {
         int childIdx = (toIndex >>> shift) & MASK;
         if (shift == 0) {
-            newList.rootShift = shift;
+            newList.rootShift = (byte) shift;
             return node.copy(isOwned, childIdx+1);
         }
         if (node instanceof SizedParentNode sn) {
@@ -2084,14 +2083,14 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         if (isChildLeftmost) {
             return rightNode;
         }
-        newList.rootShift = shift;
+        newList.rootShift = (byte) shift;
         return ((ParentNode) node).copyPrefix(isOwned, childIdx, rightNode, shift);
     }
     
     private static <E> Node forkSuffixRec(int fromIndex, TrieForkJoinList<E> newList, Node node, int shift, boolean isRightmost, boolean isOwned) {
         int childIdx = (fromIndex >>> shift) & MASK;
         if (shift == 0) {
-            newList.rootShift = shift;
+            newList.rootShift = (byte) shift;
             return node.copySuffix(isOwned, childIdx);
         }
         if (node instanceof SizedParentNode sn) {
@@ -2109,7 +2108,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         if (isChildRightmost) {
             return leftNode;
         }
-        newList.rootShift = shift;
+        newList.rootShift = (byte) shift;
         return ((ParentNode) node).copySuffix(isOwned, childIdx, leftNode, isRightmost, shift);
     }
     
@@ -2117,7 +2116,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         int fromChildIdx = (fromIndex >>> shift) & MASK;
         int toChildIdx = (toIndex >>> shift) & MASK;
         if (shift == 0) {
-            newList.rootShift = shift;
+            newList.rootShift = (byte) shift;
             return node.copyRange(false, fromChildIdx, toChildIdx+1);
         }
         if (node instanceof SizedParentNode sn) {
@@ -2145,7 +2144,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         Node leftNode = forkSuffixRec(fromIndex, newList, (Node) node.children[fromChildIdx], childShift, false, false);
         Node rightNode = forkPrefixRec(toIndex, newList, (Node) node.children[toChildIdx], childShift, false, false);
-        newList.rootShift = shift;
+        newList.rootShift = (byte) shift;
         return ((ParentNode) node).copyRange(false, fromChildIdx, leftNode, toChildIdx, rightNode, shift);
     }
     
@@ -2217,7 +2216,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 // Push down tail and adopt right tail
                 pushDownTail();
                 tail = rightTail;
-                tailSize = rightTailSize;
+                tailSize = (byte) rightTailSize;
                 size += right.size;
                 return true;
             }
@@ -2228,7 +2227,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             if (newTailSize <= SPAN) {
                 // Merge tails
                 System.arraycopy(rightTail.children, 0, leftTail.children, leftTailSize, rightTailSize);
-                tailSize = newTailSize;
+                tailSize = (byte) newTailSize;
                 size += right.size;
                 return true;
             }
@@ -2238,7 +2237,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             System.arraycopy(rightTail.children,  0, leftTail.children, leftTailSize, suffixSize);
             pushDownTail();
             Node newTail = tail = new Node(new Object[SPAN]);
-            System.arraycopy(rightTail.children, suffixSize, newTail.children, 0, tailSize = rightTailSize - suffixSize);
+            System.arraycopy(rightTail.children, suffixSize, newTail.children, 0, tailSize = (byte) (rightTailSize - suffixSize));
             size += right.size;
             return true;
         }
@@ -2272,27 +2271,27 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     private void assignRoot(Node leftNode, Node rightNode, int newRootShift, int combinedNodeSize) {
         if (rightNode == EMPTY_NODE) {
             root = leftNode;
-            rootShift = newRootShift;
+            rootShift = (byte) newRootShift;
         }
         else {
             Object[] children = { leftNode, rightNode };
             ParentNode newRoot;
             int childSize;
             if ((childSize = getSizeIfNeedsSizedParent(leftNode, false, newRootShift)) != -1) {
-                Sizes sizes = Sizes.of(rootShift = newRootShift + SHIFT, 2);
+                Sizes sizes = Sizes.of(rootShift = (byte) (newRootShift + SHIFT), 2);
                 sizes.set(0, childSize);
                 sizes.set(1, combinedNodeSize);
                 root = newRoot = new SizedParentNode(children, sizes);
             }
             else if ((childSize = getSizeIfNeedsSizedParent(rightNode, true, newRootShift)) != -1) {
-                Sizes sizes = Sizes.of(rootShift = newRootShift + SHIFT, 2);
+                Sizes sizes = Sizes.of(rootShift = (byte) (newRootShift + SHIFT), 2);
                 sizes.set(0, combinedNodeSize - childSize);
                 sizes.set(1, combinedNodeSize);
                 root = newRoot = new SizedParentNode(children, sizes);
             }
             else {
                 root = newRoot = new ParentNode(children);
-                rootShift = newRootShift + SHIFT;
+                rootShift = (byte) (newRootShift + SHIFT);
             }
             newRoot.claim(0);
             newRoot.claim(1);
@@ -2643,7 +2642,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                     System.arraycopy(leftTail.children, tailIdx, leftTail.children, tailIdx + right.tailSize, tailSize - tailIdx);
                     System.arraycopy(right.tail.children, 0, leftTail.children, tailIdx, right.tailSize);
                     size += right.tailSize;
-                    tailSize = newTailSize;
+                    tailSize = (byte) newTailSize;
                     return true;
                 }
                 
@@ -2665,7 +2664,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 pushDownTail();
                 
                 tail = new Node(newChildren);
-                size += (tailSize = remainingRight + remainingLeft);
+                size += tailSize = (byte) (remainingRight + remainingLeft);
                 return true;
             }
             
@@ -2687,11 +2686,11 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 size -= leftSuffixSize;
                 boolean ownsTail = claimTail();
                 if (tailIdx != 0) {
-                    tail = tail.copy(ownsTail, tailSize = tailIdx);
+                    tail = tail.copy(ownsTail, tailSize = (byte) tailIdx);
                     pushDownTail();
                 }
                 tail = new Node(newTailChildren);
-                tailSize = remainingSuffixSize;
+                tailSize = (byte) remainingSuffixSize;
                 size += right.size + remainingSuffixSize;
             }
             else {
@@ -2701,11 +2700,11 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 size -= leftSuffixSize;
                 boolean ownsTail = claimTail();
                 if (tailIdx != 0) {
-                    tail = tail.copy(ownsTail, tailSize = tailIdx);
+                    tail = tail.copy(ownsTail, tailSize = (byte) tailIdx);
                     pushDownTail();
                 }
                 tail = right.tail;
-                tailSize = right.tailSize + leftSuffixSize;
+                tailSize = (byte) (right.tailSize + leftSuffixSize);
                 size += right.size + leftSuffixSize;
             }
             
