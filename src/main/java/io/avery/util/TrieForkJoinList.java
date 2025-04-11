@@ -152,7 +152,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     //  - faster iteration - no need to traverse down on each advance
     //  - faster set - no need to traverse down each time
     // Cons of custom iterator:
-    //  - iterator retains a strong reference to root (even after external co-mod), preventing GC
+    //  - iterator has more state + retains a strong reference to root (even after external co-mod), preventing GC
     
     
     @Override
@@ -977,7 +977,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 // ...Ends in the root
                 System.arraycopy(curr.children, index, a, offset, copyLen = Math.min(range - offset, curr.children.length - index));
                 while ((offset += copyLen) != range) {
-                    while (++parent.offset == SPAN) {
+                    while (++parent.offset == parent.node.children.length) {
                         parent = stack[++i];
                     }
                     while (i > 0) {
@@ -995,7 +995,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 int fence = range - (toIndex - tailOffset);
                 System.arraycopy(curr.children, index, a, offset, copyLen = curr.children.length - index);
                 while ((offset += copyLen) != fence) {
-                    while (++parent.offset == SPAN) {
+                    while (++parent.offset == parent.node.children.length) {
                         parent = stack[++i];
                     }
                     while (i > 0) {

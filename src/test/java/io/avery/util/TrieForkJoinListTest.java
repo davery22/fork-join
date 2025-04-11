@@ -621,7 +621,6 @@ class TrieForkJoinListTest {
         ForkJoinList<Integer> list = factory.get();
         ListIterator<Integer> iter = list.listIterator();
         // TODO: ArrayList is >20x faster. Optimize
-        // TODO: children renderer throws AIOOBE
 //        var start = Instant.now();
         int i;
         for (i = 0; i < 1000; i++) {
