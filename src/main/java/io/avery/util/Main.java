@@ -26,6 +26,10 @@ public class Main {
     //  - Seemingly not in join(), assuming both sides start with a full rightmost leaf
     
     public static void main(String[] args) {
+        iterFuzz();
+    }
+    
+    static void iterFuzz() {
         List<Integer> bootstrap = IntStream.range(0, 100_000_000).boxed().toList();
 //        Instant start = Instant.now();
 //        List<Integer> list = new ArrayList<>(bootstrap);
@@ -37,7 +41,8 @@ public class Main {
 //        }
         Instant start = Instant.now();
         var state = new Object(){ long sum = 0; };
-        list.iterator().forEachRemaining(i -> state.sum += i);
+        list.forEach(i -> state.sum += i);
+//        list.iterator().forEachRemaining(i -> state.sum += i);
 //        for (int i : list) {
 //            state.sum += i;
 //        }
@@ -48,6 +53,25 @@ public class Main {
 //        }
         Instant end = Instant.now();
         System.out.println(state.sum);
+        System.out.println(Duration.between(start, end));
+    }
+    
+    static void iterFuzz2() {
+        // TFJL       = PT2M6.968707S
+        // LinkedList = PT1.437222S
+        // ArrayList  = (killed after 10 min)
+        List<Integer> bootstrap = IntStream.range(0, 50_000_000).boxed().toList();
+        List<Integer> list = new TrieForkJoinList<>(bootstrap);
+        var iter = list.listIterator(list.size());
+        Instant start = Instant.now();
+        for (;;) {
+            if (!iter.hasPrevious()) break;
+            iter.previous();
+            iter.add(0);
+            if (!iter.hasPrevious()) break;
+            iter.previous();
+        }
+        Instant end = Instant.now();
         System.out.println(Duration.between(start, end));
     }
     

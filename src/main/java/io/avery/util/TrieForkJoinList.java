@@ -146,56 +146,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     }
     
     
-    // TODO: Make sure we handle modCount
-    
-    // -toArray()
-    // -toArray(arr)
-    // -removeIf(predicate)
-    // -removeAll(collection)
-    // -retainAll(collection)
-    // -iterator()
-    // -listIterator()
-    // -listIterator(index)
-    // -addAll(collection)
-    // -addAll(index, collection)
-    // -get(index)
-    // -set(index, element)
-    // -add(element)
-    // -add(index, element)
-    // -clear()
-    // -reversed()
-    // -remove(index)
-    // -size()
-    // -fork()
-    // -join(collection)
-    // -join(index, collection)
-    // -subList(from, to)
-    // -spliterator()
-    
-    // TODO: Some of these might need revisited just to handle modCount - see ArrayList
-    
-    // -toArray(gen) - Collection
-    // -addFirst() - List
-    // -addLast() - List
-    // -contains(object) - AbstractCollection
-    // -containsAll(collection) - AbstractCollection
-    // -equals(object) - AbstractList (does not short-circuit on size...)
-    // -getFirst() - List
-    // -getLast() - List
-    // -hashCode() - AbstractList (uses step-wise iteration, not forEachRemaining()...)
-    // -indexOf() - AbstractList
-    // -isEmpty() - AbstractCollection
-    // -lastIndexOf() - AbstractList
-    // -remove(object) - AbstractCollection
-    // -removeFirst() - List (maybe improve)
-    // -removeLast() - List (maybe improve)
-    // -replaceAll(unaryOp) - List
-    // -sort(comparator) - List
-    // -toString() - AbstractCollection
-    // -forEach(action) - Iterable (uses step-wise iteration, not forEachRemaining()...)
-    // -stream() - Collection
-    // -parallelStream() - Collection
-    
+    // TODO: Verify that everything in the reversed() List makes sense / is fairly optimal.
     
     // Pros of custom iterator:
     //  - faster iteration - no need to traverse down on each advance
@@ -203,6 +154,44 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     // Cons of custom iterator:
     //  - iterator retains a strong reference to root (even after external co-mod), preventing GC
     
+    
+    @Override
+    public boolean equals(Object o) {
+        // Overridden from AbstractList just to add short-circuiting on size mismatch (when class matches exactly).
+        // This is to somewhat level the playing field with ArrayList, which also does this optimization (but only
+        // for itself - not other impls with known O(1) size()).
+        if (o == this) {
+            return true;
+        }
+        if (!(o instanceof List<?> list)) {
+            return false;
+        }
+        if (o.getClass() == TrieForkJoinList.class && list.size() != size) {
+            return false;
+        }
+        ListIterator<E> e1 = listIterator();
+        ListIterator<?> e2 = list.listIterator();
+        while (e1.hasNext() && e2.hasNext()) {
+            E o1 = e1.next();
+            Object o2 = e2.next();
+            if (!Objects.equals(o1, o2)) {
+                return false;
+            }
+        }
+        return !(e1.hasNext() || e2.hasNext());
+    }
+    
+    @Override
+    public int hashCode() {
+        var box = new Object(){ int hashCode = 1; };
+        forEach(e -> box.hashCode = 31*box.hashCode + (e==null ? 0 : e.hashCode()));
+        return box.hashCode;
+    }
+    
+    @Override
+    public void forEach(Consumer<? super E> action) {
+        spliterator().forEachRemaining(action);
+    }
     
     @Override
     public Iterator<E> iterator() {
@@ -779,6 +768,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         if (numNew == 0) {
             return false;
         }
+        modCount++;
+        
         int oldTailSize = tailSize, offset = SPAN - oldTailSize;
         if (numNew <= offset) {
             Node oldTail = getEditableTail();
@@ -817,6 +808,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         if (numNew == 0) {
             return false;
         }
+        modCount++;
         
         int tailOffset = tailOffset();
         if (index >= tailOffset) {
@@ -1188,8 +1180,15 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         left.root = splitRoots[0];
         left.directAppend(new Object[]{ element }, 0, AppendMode.ALWAYS_EMPTY_SRC);
         
+        // Concat element onto left
+//        splitRoots[1] = new Node(new Object[]{ element });
+//        concatSubTree(splitRoots, rootShifts[0], 0, true);
+//        assignRoot(splitRoots[0], splitRoots[1], rootShifts[0], index + 1);
+        
         // Concat right onto left
         size++;
+//        int newRootShift = rootShift;
+//        splitRoots[0] = root;
         int newRootShift = left.rootShift;
         splitRoots[0] = left.root;
         splitRoots[1] = rightRoot;
@@ -1199,6 +1198,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     
     @Override
     public void clear() {
+        modCount++;
         size = tailSize = rootShift = owns = 0;
         root = null;
         tail = INITIAL_TAIL;
@@ -1708,11 +1708,11 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             }
             removeRange(w, end);
             return true;
-        } else {
-            if (modCount != expectedModCount)
-                throw new ConcurrentModificationException();
-            return false;
         }
+        if (modCount != expectedModCount) {
+            throw new ConcurrentModificationException();
+        }
+        return false;
     }
     
     @Override
@@ -1731,10 +1731,12 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         int r;
         // Optimize for initial run of survivors
         for (r = from;; r++) {
-            if (r == end)
+            if (r == end) {
                 return false;
-            if (c.contains(right.next()) != complement)
+            }
+            if (c.contains(right.next()) != complement) {
                 break;
+            }
         }
         ListItr left = new ListItr(r);
         int w = r++;
@@ -1747,10 +1749,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 }
             }
         } finally {
-            // Preserve behavioral compatibility with AbstractCollection,
-            // even if c.contains() throws.
-            
-            // assert r >= w + 1;
+            // Preserve behavioral compatibility with AbstractCollection even if c.contains() throws.
+            // Remove the gap and increment modCount by number of removed elements.
             modCount += r - w - 1; // Extra -1 to negate the +1 inside removeRange
             removeRange(w, r);
         }
@@ -1762,6 +1762,11 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         // In-place dual of forkRange()
         
         // TODO: Handle non-full leaf root before returning?
+        
+        if (fromIndex < 0 || fromIndex > toIndex || toIndex > size) {
+            throw new IndexOutOfBoundsException(outOfBoundsMsg(fromIndex, toIndex));
+        }
+        modCount++;
         
         if (fromIndex == 0) {
             removePrefix(toIndex);
@@ -1947,6 +1952,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     }
     
     private TrieForkJoinList<E> forkRange(int fromIndex, int toIndex) {
+        // Only called by subList.fork(), whose bounds are already checked - no additional bounds checking needed.
+        
         // Invalidate stack ownership for any existing ListIterators
         forkId = new Object();
         
@@ -2190,6 +2197,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         if (right.isEmpty()) {
             return false;
         }
+        modCount++;
+        
         if (isEmpty()) {
             size = right.size;
             tailSize = right.tailSize;
@@ -2610,6 +2619,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         if (right.isEmpty()) {
             return false;
         }
+        modCount++;
+        
         if (isEmpty()) {
             size = right.size;
             tailSize = right.tailSize;
@@ -2752,6 +2763,10 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         return "Index: "+index+", Size: "+size;
     }
     
+    private static String outOfBoundsMsg(int fromIndex, int toIndex) {
+        return "From Index: " + fromIndex + " > To Index: " + toIndex;
+    }
+    
     private static class SubList<E> extends AbstractList<E> implements ForkJoinList<E>, RandomAccess {
         private final TrieForkJoinList<E> root;
         private final SubList<E> parent;
@@ -2865,8 +2880,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             return true;
         }
         
-        // replaceAll
-        
         @Override
         public boolean removeAll(Collection<?> c) {
             return batchRemove(c, false);
@@ -2910,11 +2923,17 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             return root.toArray(a, offset, offset + size);
         }
         
-        // equals
-        // hashCode
-        // indexOf
-        // lastIndexOf
-        // contains
+        @Override
+        public int hashCode() {
+            var box = new Object(){ int hashCode = 1; };
+            forEach(e -> box.hashCode = 31*box.hashCode + (e==null ? 0 : e.hashCode()));
+            return box.hashCode;
+        }
+        
+        @Override
+        public void forEach(Consumer<? super E> action) {
+            spliterator().forEachRemaining(action);
+        }
         
         @Override
         public Iterator<E> iterator() {
@@ -2929,22 +2948,22 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             return root.new ListItr(offset + index) {
                 @Override
                 public boolean hasNext() {
-                    return nextIndex() < size;
+                    return cursor < offset + size;
                 }
                 
                 @Override
                 public boolean hasPrevious() {
-                    return previousIndex() >= 0;
+                    return cursor >= offset;
                 }
                 
                 @Override
                 public int nextIndex() {
-                    return super.nextIndex() - offset;
+                    return cursor - offset;
                 }
                 
                 @Override
                 public int previousIndex() {
-                    return super.previousIndex() - offset;
+                    return cursor - offset - 1;
                 }
                 
                 @Override
@@ -3006,6 +3025,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 int getFence() {
                     int hi = fence;
                     if (hi < 0) {
+                        // Late-initialize expectedModCount
                         expectedModCount = SubList.this.modCount;
                         hi = fence = offset + SubList.this.size;
                     }
@@ -3775,10 +3795,11 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         
         static Sizes of(int shift, int len) {
-            if ((SPAN<<shift) <= 256) {
+            long maxSize = (long) SPAN << shift;
+            if (maxSize <= 256) {
                 return new Sizes.OfByte(new byte[len]);
             }
-            if ((SPAN<<shift) <= 65536) {
+            if (maxSize <= 65536) {
                 return new Sizes.OfShort(new char[len]);
             }
             return new Sizes.OfInt(new int[len]);
