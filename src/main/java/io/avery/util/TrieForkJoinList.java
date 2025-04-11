@@ -5,8 +5,6 @@ import java.util.*;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 
-// TODO: can rootShift get too big? (ie shift off the entire index -> 0, making later elements unreachable)
-//  - I think the answer is "yes, but we'd still find later elements by linear searching a size table"
 // TODO: Shifts (right and left) can wrap! eg: (int >>> 35) == (int >>> 3);  (int << 35) == (int << 3)
 //  - Force result to 0 when shift is too big
 // TODO: Throw OOME when index size limit exceeded
@@ -1817,10 +1815,10 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         // In-place version of forkPrefix()
         
         // Already checked in removeRange() (caller)
-//        if (fromIndex == 0) {
-//            clear();
-//            return;
-//        }
+        //if (fromIndex == 0) {
+        //    clear();
+        //    return;
+        //}
         if (fromIndex == size) {
             return;
         }
@@ -2032,10 +2030,10 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     
     private TrieForkJoinList<E> forkSuffix(int fromIndex) {
         // Already checked in forkRange() (caller)
-//        if (fromIndex == 0) {
-//            owns = 0;
-//            return new TrieForkJoinList<>(this);
-//        }
+        //if (fromIndex == 0) {
+        //    owns = 0;
+        //    return new TrieForkJoinList<>(this);
+        //}
         if (fromIndex == size) {
             return new TrieForkJoinList<>();
         }
@@ -2165,26 +2163,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     // Cons with a copying join:
     //   a.join(b) has to conservatively fork b, so future updates will lazy-copy
     //
-    // TODO: Does parent.fork() count as co-modification?
-    //  - Not to subLists, and not necessarily to iterators
-    //    - But iterators must ensureEditable() on the whole stack each time...
-    //      - Because any intermediate parent may have been disowned by a subList.fork()...
-    //  - Perhaps forking a subList counts as a mod, but not forking the root?
-    //    - Iterators must check that the expected root hasn't changed, but not every intermediate node
-    //      - ...because they will throw if an intermediate node was shared
-    //    - This will be surprising when we join() a subList and implicitly fork() it
-    //      - Invalidates progeny subLists and ALL iterators (because their cursor might be in the subList)
-    //    - What about when root is re-owned?
-    //      - Can still detect this - root will not match the first node in iterator stack
-    //        - (Which implies iterator can prevent gc... probably ok)
-    //        - In that case, traverse the stack and ensureEditable for each node
-    //      - This can only happen due to a co-mod anyway
-    //  - IDEA: Use a separate checksum to tell iterators to re-sync their stack on checksum mismatch
-    //    - Only need to increment checksum if we changed some ownership during set() (unowned -> owned)
-    //      or fork() (owned -> unowned, maybe only subList.fork() since list.fork() is a faster root-sync)
-    //    - Unfortunately, unlike modCount which makes co-mods typically fail, this would make co-mods typically
-    //      succeed, which would create a false sense of security.
-    
     // if other is a known implementation: fork() it to ensure no unsafe sharing or mutation
     //  - this also protects the list when joining itself, or a sublist
     // else: addAll()
@@ -2198,8 +2176,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     //   - Nope; we cannot assume caller is ok if we destroy something they gave us - still have to fork internally
     //   - Plus, requiring arg.fork() before calling to get optimization is unintuitive and forgettable
     
-    // TODO: Nodes with free space?
-    
     
     
     @Override
@@ -2209,7 +2185,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             return addAll(other);
         }
         if (!((other = fjl.fork()) instanceof TrieForkJoinList<? extends E> right)) {
-            return addAll(other); // TODO: Skip copying
+            return addAll(other);
         }
         if (right.isEmpty()) {
             return false;
@@ -2252,7 +2228,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             int suffixSize = SPAN - leftTailSize;
             System.arraycopy(rightTail.children,  0, leftTail.children, leftTailSize, suffixSize);
             pushDownTail();
-            // TODO? Makes a new array - assumes right tail would need copied anyway
             Node newTail = tail = new Node(new Object[SPAN]);
             System.arraycopy(rightTail.children, suffixSize, newTail.children, 0, tailSize = rightTailSize - suffixSize);
             size += right.size;
@@ -2447,7 +2422,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             totalNodes += ((Node) child).children.length;
         }
         
-        int minLength = ((totalNodes-1) / SPAN) + 1; // TODO: / SPAN  ->  >>> SHIFT
+        int minLength = ((totalNodes-1) >>> SHIFT) + 1;
         int maxLength = minLength + MARGIN;
         int curLength = leftChildren.length + rightChildren.length;
         if (curLength <= maxLength) {
@@ -2496,9 +2471,9 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 if ((i += step) >= llen) {
                     // We will hit this case at most once
                     i += right0 - llen;
-                    llen = rightChildren.length;
-                    lNode = right;
-                    lchildren = rightChildren;
+                    llen = rlen = rightChildren.length;
+                    lNode = rNode = right;
+                    lchildren = rchildren = rightChildren;
                 }
                 step = 1;
             }
@@ -2514,7 +2489,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                     rNode = right;
                     rchildren = rightChildren;
                 }
-                step = 1;
                 
                 Node rChildNode = (Node) rchildren[j];
                 int slots = SPAN - curLen;
@@ -2529,6 +2503,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                     lchildren = rchildren;
                     skip = slots;
                     curLen = items - slots;
+                    step = 1;
                 }
                 else {
                     // Empty the rest of the right child into the left child
@@ -2542,7 +2517,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                         rightDeathRow |= (1L << j);
                     }
                     
-                    step = 2; // Ensure we step over the gap we just created
+                    // We emptied a node, so need to step further to get to the next non-empty node
+                    step++;
                     break;
                 }
             }

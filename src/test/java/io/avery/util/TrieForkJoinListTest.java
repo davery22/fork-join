@@ -5,13 +5,14 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments.ArgumentSet;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.*;
 import java.util.function.Function;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.params.provider.Arguments.argumentSet;
 
 class TrieForkJoinListTest {
@@ -86,7 +87,8 @@ class TrieForkJoinListTest {
             argumentSet("iterator5", id(TrieForkJoinListTest::iterator5)),
             argumentSet("iterator6", id(TrieForkJoinListTest::iterator6)),
             argumentSet("iterator7", id(TrieForkJoinListTest::iterator7)),
-            argumentSet("iterator8", id(TrieForkJoinListTest::iterator8))
+            argumentSet("iterator8", id(TrieForkJoinListTest::iterator8)),
+            argumentSet("listIterator1", id(TrieForkJoinListTest::listIterator1))
         );
 //        ),
 //        IntStream.rangeClosed(1, 100)
@@ -612,6 +614,39 @@ class TrieForkJoinListTest {
             iterSetForward(iter, result);
         }
         return result;
+    }
+    
+    static ForkJoinList<Integer> listIterator1(Factory factory) {
+        // Add all elements via iterator
+        ForkJoinList<Integer> list = factory.get();
+        ListIterator<Integer> iter = list.listIterator();
+        // TODO: ArrayList is 10-20x faster. Optimize
+//        var start = Instant.now();
+        int i;
+        for (i = 0; i < 1000; i++) {
+            iter.add(i);
+        }
+        for (;;) {
+            if (!iter.hasPrevious()) { break; }
+            iter.previous();
+            iter.add(i++);
+            if (!iter.hasPrevious()) { break; }
+            iter.previous();
+        }
+        for (;;) {
+            if (!iter.hasNext()) { break; }
+            iter.next();
+            iter.add(i++);
+        }
+//        var end = Instant.now();
+//        System.out.println(Duration.between(start, end));
+        return list;
+    }
+    
+    @Test
+    void testIteratorInvalidRemove() {
+        Iterator<Object> iter = new TrieForkJoinList<>().iterator();
+        assertThrows(IllegalStateException.class, iter::remove);
     }
     
     @Test
