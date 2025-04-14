@@ -2599,6 +2599,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     @Override
     public boolean join(int index, Collection<? extends E> other) {
         if (index == size) {
+            // This case is always hit if size == 0 and index is in bounds,
+            // thus there is no isEmpty() case below.
             return join(other);
         }
         rangeCheckForAdd(index);
@@ -2614,16 +2616,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         checkNewSize(size, right.size);
         modCount++;
-        
-        if (isEmpty()) {
-            size = right.size;
-            tailSize = right.tailSize;
-            rootShift = right.rootShift;
-            root = right.root;
-            tail = right.tail;
-            owns = 0;
-            return true;
-        }
         
         int tailOffset = tailOffset();
         if (index >= tailOffset) {

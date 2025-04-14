@@ -32,11 +32,20 @@ class TrieForkJoinListTest {
 //        return Stream.concat(
 //        Stream.of(
         return Stream.of(
+            argumentSet("subListSet1", id(TrieForkJoinListTest::subListSet1)),
             argumentSet("join1", id(TrieForkJoinListTest::join1)),
             argumentSet("join2", id(TrieForkJoinListTest::join2)),
             argumentSet("join3", id(TrieForkJoinListTest::join3)),
             argumentSet("join4", id(TrieForkJoinListTest::join4)),
             argumentSet("join5", id(TrieForkJoinListTest::join5)),
+            argumentSet("join6", id(TrieForkJoinListTest::join6)),
+            argumentSet("join7", id(TrieForkJoinListTest::join7)),
+            argumentSet("join8", id(TrieForkJoinListTest::join8)),
+            argumentSet("join9", id(TrieForkJoinListTest::join9)),
+            argumentSet("join10", id(TrieForkJoinListTest::join10)),
+            argumentSet("join11", id(TrieForkJoinListTest::join11)),
+            argumentSet("join12", id(TrieForkJoinListTest::join12)),
+            argumentSet("join13", id(TrieForkJoinListTest::join13)),
             argumentSet("joinAtIndex1", id(TrieForkJoinListTest::joinAtIndex1)),
             argumentSet("joinAtIndex2", id(TrieForkJoinListTest::joinAtIndex2)),
             argumentSet("joinAtIndex3", id(TrieForkJoinListTest::joinAtIndex3)),
@@ -45,6 +54,11 @@ class TrieForkJoinListTest {
             argumentSet("joinAtIndex6", id(TrieForkJoinListTest::joinAtIndex6)),
             argumentSet("joinAtIndex7", id(TrieForkJoinListTest::joinAtIndex7)),
             argumentSet("joinAtIndex8", id(TrieForkJoinListTest::joinAtIndex8)),
+            argumentSet("joinAtIndex9", id(TrieForkJoinListTest::joinAtIndex9)),
+            argumentSet("joinAtIndex10", id(TrieForkJoinListTest::joinAtIndex10)),
+            argumentSet("joinAtIndex11", id(TrieForkJoinListTest::joinAtIndex11)),
+            argumentSet("joinAtIndex12", id(TrieForkJoinListTest::joinAtIndex12)),
+            argumentSet("joinAtIndex13", id(TrieForkJoinListTest::joinAtIndex13)),
             argumentSet("addAll1", id(TrieForkJoinListTest::addAll1)),
             argumentSet("addAll2", id(TrieForkJoinListTest::addAll2)),
             argumentSet("addAll3", id(TrieForkJoinListTest::addAll3)),
@@ -167,7 +181,7 @@ class TrieForkJoinListTest {
     }
     
     static ForkJoinList<Integer> join5(Factory factory) {
-        // Concatenate in a pattern such that leftLen < SPAN but leftLen + rightLen > SPAN
+        // Concatenate in a pattern such that leftLen < SPAN, but leftLen + rightLen > SPAN
         int leftSize  = SPAN*2;    // Tree would have 2 levels after tail push-down, with 2 children in root
         int rightSize = SPAN*SPAN; // Tree would have 2 fully-dense levels after tail push-down
         ForkJoinList<Integer> left = listOfSize(factory, leftSize);
@@ -178,6 +192,70 @@ class TrieForkJoinListTest {
             result.join(right);
         }
         return result;
+    }
+    
+    static ForkJoinList<Integer> join6(Factory factory) {
+        // Join an empty list
+        ForkJoinList<Integer> left = listOfSize(factory, 1000);
+        ForkJoinList<Integer> right = factory.get();
+        left.join(right);
+        return left;
+    }
+    
+    static ForkJoinList<Integer> join7(Factory factory) {
+        // Join onto an empty list
+        ForkJoinList<Integer> left = factory.get();
+        ForkJoinList<Integer> right = listOfSize(factory, 1000);
+        left.join(right);
+        return left;
+    }
+    
+    static ForkJoinList<Integer> join8(Factory factory) {
+        // Join something that is not a ForkJoinList
+        ForkJoinList<Integer> left = listOfSize(factory, 1000);
+        List<Integer> right = IntStream.range(0, 100).boxed().toList();
+        left.join(right);
+        return left;
+    }
+    
+    static ForkJoinList<Integer> join9(Factory factory) {
+        // Join something that does not fork the same kind of ForkJoinList
+        ForkJoinList<Integer> left = listOfSize(factory, 1000);
+        ForkJoinList<Integer> right = listOfSize(factory, 100).reversed();
+        left.join(right);
+        return left;
+    }
+    
+    static ForkJoinList<Integer> join10(Factory factory) {
+        // Join a small (tail-only) list to existing list with a full tail
+        ForkJoinList<Integer> left = listOfSize(factory, SPAN*SPAN + SPAN);
+        ForkJoinList<Integer> right = listOfSize(factory, SPAN);
+        left.join(right);
+        return left;
+    }
+    
+    static ForkJoinList<Integer> join11(Factory factory) {
+        // Join a small (tail-only) list to existing list, new tail fits into existing tail
+        ForkJoinList<Integer> left = listOfSize(factory, SPAN*SPAN + SPAN/2);
+        ForkJoinList<Integer> right = listOfSize(factory, SPAN/4);
+        left.join(right);
+        return left;
+    }
+    
+    static ForkJoinList<Integer> join12(Factory factory) {
+        // Join a small (tail-only) list to existing list, new tail does not fit into existing tail
+        ForkJoinList<Integer> left = listOfSize(factory, SPAN*SPAN + SPAN/2);
+        ForkJoinList<Integer> right = listOfSize(factory, SPAN);
+        left.join(right);
+        return left;
+    }
+    
+    static ForkJoinList<Integer> join13(Factory factory) {
+        // Join a leftwise-dense tree to a fully-dense tree (result should be leftwise-dense)
+        ForkJoinList<Integer> left = listOfSize(factory, SPAN*SPAN);
+        ForkJoinList<Integer> right = listOfSize(factory, SPAN*SPAN/2);
+        left.join(right);
+        return left;
     }
     
     static ForkJoinList<Integer> joinAtIndex1(Factory factory) {
@@ -248,6 +326,46 @@ class TrieForkJoinListTest {
         ForkJoinList<Integer> toInsert = listOfSize(factory, 5000);
         list.join(4200, toInsert);
         return list;
+    }
+    
+    static ForkJoinList<Integer> joinAtIndex9(Factory factory) {
+        // Join at end (index == size)
+        ForkJoinList<Integer> list = listOfSize(factory, 10000);
+        ForkJoinList<Integer> toInsert = listOfSize(factory, 200);
+        list.join(list.size(), toInsert);
+        return list;
+    }
+    
+    static ForkJoinList<Integer> joinAtIndex10(Factory factory) {
+        // Join an empty list
+        ForkJoinList<Integer> left = listOfSize(factory, 1000);
+        ForkJoinList<Integer> right = factory.get();
+        left.join(300, right);
+        return left;
+    }
+    
+    static ForkJoinList<Integer> joinAtIndex11(Factory factory) {
+        // Join onto an empty list
+        ForkJoinList<Integer> left = factory.get();
+        ForkJoinList<Integer> right = listOfSize(factory, 1000);
+        left.join(0, right);
+        return left;
+    }
+    
+    static ForkJoinList<Integer> joinAtIndex12(Factory factory) {
+        // Join something that is not a ForkJoinList
+        ForkJoinList<Integer> left = listOfSize(factory, 1000);
+        List<Integer> right = IntStream.range(0, 100).boxed().toList();
+        left.join(300, right);
+        return left;
+    }
+    
+    static ForkJoinList<Integer> joinAtIndex13(Factory factory) {
+        // Join something that does not fork the same kind of ForkJoinList
+        ForkJoinList<Integer> left = listOfSize(factory, 1000);
+        ForkJoinList<Integer> right = listOfSize(factory, 100).reversed();
+        left.join(300, right);
+        return left;
     }
     
     static ForkJoinList<Integer> addAll1(Factory factory) {
@@ -786,6 +904,22 @@ class TrieForkJoinListTest {
         Stream<Integer> stream = subList.stream();
         zigZagAdd(subList, 1000);
         return stream.map(i -> i+1).parallel().toList();
+    }
+    
+    static Object subListSet1(Factory factory) {
+        // TODO: For list size 100, subList [20,80),
+        //  it looked like the last subList node could have been shared but wasn't
+        ForkJoinList<Integer> list = listOfSize(factory, 1000);
+        ForkJoinList<Integer> subList = list.subList(200, 800);
+        subList.fork(); // Share ownership of nodes, forcing set() to path-copy (which is a structural modification)
+        return subList.set(300, -1);
+    }
+    
+    @Test
+    void testJoinOutOfBounds() {
+        ForkJoinList<Integer> list = new TrieForkJoinList<>();
+        ForkJoinList<Integer> toInsert = listOfSize(TRIE_FJL, 10);
+        assertThrows(IndexOutOfBoundsException.class, () -> list.join(1, toInsert));
     }
     
     @Test
