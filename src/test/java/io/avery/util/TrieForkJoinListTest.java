@@ -88,7 +88,22 @@ class TrieForkJoinListTest {
             argumentSet("iterator6", id(TrieForkJoinListTest::iterator6)),
             argumentSet("iterator7", id(TrieForkJoinListTest::iterator7)),
             argumentSet("iterator8", id(TrieForkJoinListTest::iterator8)),
-            argumentSet("listIterator1", id(TrieForkJoinListTest::listIterator1))
+            argumentSet("subListIterator1", id(TrieForkJoinListTest::subListIterator1)),
+            argumentSet("subListIterator2", id(TrieForkJoinListTest::subListIterator2)),
+            argumentSet("subListIterator3", id(TrieForkJoinListTest::subListIterator3)),
+            argumentSet("listIterator1", id(TrieForkJoinListTest::listIterator1)),
+            argumentSet("listIterator2", id(TrieForkJoinListTest::listIterator2)),
+            argumentSet("listIterator3", id(TrieForkJoinListTest::listIterator3)),
+            argumentSet("listIterator4", id(TrieForkJoinListTest::listIterator4)),
+            argumentSet("listIterator5", id(TrieForkJoinListTest::listIterator5)),
+            argumentSet("subListListIterator1", id(TrieForkJoinListTest::subListListIterator1)),
+            argumentSet("subListListIterator2", id(TrieForkJoinListTest::subListListIterator2)),
+            argumentSet("spliterator1", id(TrieForkJoinListTest::spliterator1)),
+            argumentSet("spliterator2", id(TrieForkJoinListTest::spliterator2)),
+            argumentSet("spliterator3", id(TrieForkJoinListTest::spliterator3)),
+            argumentSet("spliterator4", id(TrieForkJoinListTest::spliterator4)),
+            argumentSet("spliterator5", id(TrieForkJoinListTest::spliterator5)),
+            argumentSet("subListSpliterator1", id(TrieForkJoinListTest::subListSpliterator1))
         );
 //        ),
 //        IntStream.rangeClosed(1, 100)
@@ -619,28 +634,163 @@ class TrieForkJoinListTest {
     static ForkJoinList<Integer> listIterator1(Factory factory) {
         // Add all elements via iterator
         ForkJoinList<Integer> list = factory.get();
-        ListIterator<Integer> iter = list.listIterator();
-        // TODO: ArrayList is >20x faster. Optimize
-//        var start = Instant.now();
-        int i;
-        for (i = 0; i < 1000; i++) {
-            iter.add(i);
-        }
-        for (;;) {
-            if (!iter.hasPrevious()) { break; }
+        zigZagAdd(list, 1000);
+        return list;
+    }
+    
+    static ForkJoinList<Integer> listIterator2(Factory factory) {
+        // Add all elements via iterator, then remove half via iterator
+        ForkJoinList<Integer> list = factory.get();
+        zigZagAdd(list, 1000);
+        int size = list.size();
+        ListIterator<Integer> iter = list.listIterator(size/2);
+        for (int i = 0; i < size/4; i++) {
+            iter.next();
+            iter.remove();
             iter.previous();
-            iter.add(i++);
-            if (!iter.hasPrevious()) { break; }
-            iter.previous();
+            iter.remove();
         }
+        return list;
+    }
+    
+    static ForkJoinList<Integer> listIterator3(Factory factory) {
+        // Add all elements via iterator, then remove all via iterator
+        ForkJoinList<Integer> list = factory.get();
+        zigZagAdd(list, 1000);
+        ListIterator<Integer> iter = list.listIterator(list.size()/2);
         for (;;) {
             if (!iter.hasNext()) { break; }
             iter.next();
-            iter.add(i++);
+            iter.remove();
+            if (!iter.hasPrevious()) { break; }
+            iter.previous();
+            iter.remove();
         }
-//        var end = Instant.now();
-//        System.out.println(Duration.between(start, end));
         return list;
+    }
+    
+    static List<Integer> listIterator4(Factory factory) {
+        // Use iterator.forEachRemaining() to collect small list into result
+        ForkJoinList<Integer> list = listOfSize(factory, SPAN*2);
+        ListIterator<Integer> iter = list.listIterator();
+        List<Integer> result = new ArrayList<>();
+        iter.forEachRemaining(result::add);
+        return result;
+    }
+    
+    static List<Integer> listIterator5(Factory factory) {
+        // Add all elements via iterator, then forEachRemaining() from middle into result
+        ForkJoinList<Integer> list = factory.get();
+        zigZagAdd(list, 10000);
+        ListIterator<Integer> iter = list.listIterator(list.size()/2);
+        List<Integer> result = new ArrayList<>();
+        iter.forEachRemaining(result::add);
+        return result;
+    }
+    
+    static List<Integer> spliterator1(Factory factory) {
+        // Consume via a greedy sequential stream that will invoke spliterator.forEachRemaining()
+        return listOfSize(factory, 10000).stream()
+            .map(i -> i+1)
+            .toList();
+    }
+    
+    static List<Integer> spliterator2(Factory factory) {
+        // Consume via a short-circuiting sequential stream that will invoke spliterator.tryAdvance()
+        return listOfSize(factory, 10000).stream()
+            .map(i -> i+1)
+            .takeWhile(i -> i < 9999)
+            .toList();
+    }
+    
+    static List<Integer> spliterator3(Factory factory) {
+        // Consume via a greedy parallel stream that will invoke spliterator.forEachRemaining()
+        return listOfSize(factory, 10000).parallelStream()
+            .map(i -> i+1)
+            .toList();
+    }
+    
+    static List<Integer> spliterator4(Factory factory) {
+        // Consume via a short-circuiting parallel stream that will invoke spliterator.tryAdvance()
+        return listOfSize(factory, 10000).parallelStream()
+            .map(i -> i+1)
+            .takeWhile(i -> i < 9999)
+            .toList();
+    }
+    
+    static List<Integer> spliterator5(Factory factory) {
+        // Test late-binding
+        ForkJoinList<Integer> list = factory.get();
+        Stream<Integer> stream = list.stream();
+        zigZagAdd(list, 10000);
+        return stream.map(i -> i+1).parallel().toList();
+    }
+    
+    static List<Integer> subListIterator1(Factory factory) {
+        // Remove a bunch of elements via sublist iterator
+        ForkJoinList<Integer> list = listOfSize(factory, 1000);
+        Iterator<Integer> iter = list.subList(400, 600).iterator();
+        while (iter.hasNext()) {
+            iter.next();
+            iter.remove();
+        }
+        return list;
+    }
+    
+    static List<Integer> subListIterator2(Factory factory) {
+        // Use middle subList iterator.forEachRemaining() to collect elements into result
+        ForkJoinList<Integer> list = factory.get();
+        zigZagAdd(list, 1000);
+        Iterator<Integer> iter = list.subList(400, 800).iterator();
+        List<Integer> result = new ArrayList<>();
+        iter.forEachRemaining(result::add);
+        return result;
+    }
+    
+    static List<Integer> subListIterator3(Factory factory) {
+        // Use suffix subList iterator.forEachRemaining() to collect elements into result
+        ForkJoinList<Integer> list = factory.get();
+        zigZagAdd(list, 1000);
+        Iterator<Integer> iter = list.subList(500, list.size()).iterator();
+        List<Integer> result = new ArrayList<>();
+        iter.forEachRemaining(result::add);
+        return result;
+    }
+    
+    static List<Integer> subListListIterator1(Factory factory) {
+        // Add a bunch of elements via sublist iterator
+        ForkJoinList<Integer> list = listOfSize(factory, 1000);
+        ForkJoinList<Integer> subList = list.subList(400, 600);
+        zigZagAdd(subList, 1000);
+        return list;
+    }
+    
+    static List<Integer> subListListIterator2(Factory factory) {
+        // Set a bunch of elements via sublist iterator
+        ForkJoinList<Integer> list = listOfSize(factory, 1000);
+        ListIterator<Integer> iter = list.subList(400, 600).listIterator();
+        for (int i = 0; i < 100; i++) {
+            iter.set(iter.next() + 1000);
+        }
+        list.fork(); // Force iterator to invalidate its node ownership
+        while (iter.hasNext()) {
+            iter.set(iter.next() + 1000);
+        }
+        return list;
+    }
+    
+    static List<Integer> subListSpliterator1(Factory factory) {
+        // Test late-binding
+        ForkJoinList<Integer> list = listOfSize(factory, 1000);
+        ForkJoinList<Integer> subList = list.subList(400, 600);
+        Stream<Integer> stream = subList.stream();
+        zigZagAdd(subList, 1000);
+        return stream.map(i -> i+1).parallel().toList();
+    }
+    
+    @Test
+    void testSpliteratorTooSmallToSplit() {
+        assertNull(new TrieForkJoinList<>(List.of(1)).spliterator().trySplit());
     }
     
     @Test
@@ -702,6 +852,31 @@ class TrieForkJoinListTest {
             list.add(i);
         }
         return list;
+    }
+    
+    static void zigZagAdd(List<Integer> list, int initialLinearSpan) {
+        ListIterator<Integer> iter = list.listIterator();
+        // TODO: ArrayList is >20x faster. Optimize add(i,e)
+        //  LinkedList is obviously best for iterator-insertion, but that requires a tailored implementation.
+//        var start = Instant.now();
+        int i;
+        for (i = 0; i < initialLinearSpan; i++) {
+            iter.add(i);
+        }
+        for (;;) {
+            if (!iter.hasPrevious()) { break; }
+            iter.previous();
+            iter.add(i++);
+            if (!iter.hasPrevious()) { break; }
+            iter.previous();
+        }
+        for (;;) {
+            if (!iter.hasNext()) { break; }
+            iter.next();
+            iter.add(i++);
+        }
+//        var end = Instant.now();
+//        System.out.println(Duration.between(start, end));
     }
     
     static class ArrayForkJoinList<E> extends AbstractList<E> implements ForkJoinList<E> {

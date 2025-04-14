@@ -272,12 +272,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         void resetDeepestOwned() { }
     }
     
-    // TODO: See if this is actually faster than consecutive get(index)
-    //  Update: Needs a proper benchmark, but for iteration across 100M elements:
-    //                            |  iteration only  |  iteration + setting  |  forEachRemaining  (seconds)
-    //   ArrayList                |  0.13            |  1.10                 |  0.08
-    //   TFJL w/ custom iterator  |  0.32            |  1.32                 |  0.13
-    //   TFJL w/ default iterator |  0.88 (best)     |  4.99 (4.22?) (best)  |  0.86
     private class ListItr extends ItrBase implements ListIterator<E> {
         int cursor;
         int lastRet = -1;
@@ -432,10 +426,11 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 return;
             }
             
-            int tailOffset = tailOffset(), j = leafOffset;
-            i -= j;
             E[] leafChildren = (E[]) leafNode.children;
-            while (j < leafChildren.length && modCount == expectedModCount) {
+            int tailOffset = tailOffset(), j = leafOffset, theTailSize = tailSize,
+                initialLeafSize = i >= tailOffset ? theTailSize : leafChildren.length;
+            i -= j;
+            while (j < initialLeafSize && modCount == expectedModCount) {
                 action.accept(leafChildren[j++]);
             }
             Frame parent = stack != null ? stack[0] : null;
@@ -465,7 +460,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 }
                 j = leafOffset = 0;
                 leafChildren = (E[]) (leafNode = tail).children;
-                while (j < leafChildren.length && modCount == expectedModCount) {
+                while (j < theTailSize && modCount == expectedModCount) {
                     action.accept(leafChildren[j++]);
                 }
                 i += j;
@@ -1489,9 +1484,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         // If root is null, we should fill up and push down a tail before calling this method.
         assert root != null;
         
-        // TODO: There are probably several overflow bugs here,
-        //  as a tall sparse tree can have remaining space > Integer.MAX_VALUE.
-        
         // Find the deepest non-full node - we will acquire ownership down to that point.
         // Also keep track of remaining space, needed later to pre-compute node lengths, size entries, and tree height.
         Node oldRoot = root, node = oldRoot;
@@ -1518,7 +1510,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         int toIndex = switch (mode) {
             case ALWAYS_EMPTY_SRC -> src.length;
             case EMPTY_SRC_TO_FILL -> src.length - (numElements & MASK);
-            case NEVER_EMPTY_SRC -> src.length - ((numElements-1) & MASK)-1;
+            case NEVER_EMPTY_SRC -> src.length - 1 - ((numElements-1) & MASK);
         };
         numElements = toIndex - offset;
         
@@ -1875,8 +1867,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     }
     
     private static void splitRec(int fromIndex, int toIndex, Node[] nodes, int[] rootShifts, boolean isLeftmost, boolean isRightmost, int shift) {
-        // TODO: Don't assume nodes are owned - pass in isLeftOwned, isRightOwned
-        
         int fromChildIdx = (int) (rShiftU(fromIndex, shift) & MASK);
         int toChildIdx = (int) (rShiftU(toIndex, shift) & MASK);
         if (shift == 0) {
@@ -2768,7 +2758,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     
     // Methods for each shift operation. These take a long argument (often via implicit widening at the call site),
     // to ensure we use shift % 64 instead of shift % 32. This should be sufficient to avoid incorrectly wrapping the
-    // shift - Assuming that a tree with max size (2^31-1) cannot exceed a rootShift of 63. If that assumption does not
+    // shift - Assuming that even a tree with max size (2^31-1) always has a rootShift < 64. If that assumption does not
     // hold, or if we wish to support larger sizes, we would need to branch on too-large shifts.
     
     private static long lShift(long n, int shift) {
@@ -2983,7 +2973,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 
                 @Override
                 public boolean hasPrevious() {
-                    return cursor >= offset;
+                    return cursor > offset;
                 }
                 
                 @Override
