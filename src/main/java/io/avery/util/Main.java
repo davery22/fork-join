@@ -30,17 +30,19 @@ public class Main {
     }
     
     static void joinBench2() {
-        int size = 100_000;
-        List<Integer> bootstrap1 = IntStream.range(0, size).boxed().toList();
-        List<Integer> bootstrap2 = IntStream.range(0, size).boxed().toList();
-        ForkJoinList<Integer> list1 = new TrieForkJoinList<>(bootstrap1);
-        ForkJoinList<Integer> list2 = new TrieForkJoinList<>(bootstrap2);
+        int size = 1_000;
+        List<Integer> bootstrap = IntStream.range(0, size).boxed().toList();
+        ForkJoinList<Integer> right = new TrieForkJoinList<>(bootstrap);
+//        List<Integer> right = new ArrayList<>(bootstrap);
         int sum = 0;
-        for (int i = 0; i < 100_000_000; i++) {
-            var fork = list1.fork();
-//            fork.addAll(list2);
-            fork.join(list2);
-            sum += fork.size();
+        for (int j = 0; j < 100; j++) {
+            ForkJoinList<Integer> left = new TrieForkJoinList<>(); // ~1.3 sec spent in addAll, ~.7 sec spent in join
+//            List<Integer> left = new ArrayList<>(); // ~8 sec spent in addAll
+            for (int i = 0; i < 100_000; i++) {
+                left.join(right);
+//                left.addAll(right);
+                sum += left.size();
+            }
         }
         System.out.println(sum);
     }

@@ -5,10 +5,9 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments.ArgumentSet;
 import org.junit.jupiter.params.provider.MethodSource;
 
-import java.time.Duration;
-import java.time.Instant;
 import java.util.*;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
@@ -32,6 +31,9 @@ class TrieForkJoinListTest {
 //        return Stream.concat(
 //        Stream.of(
         return Stream.of(
+            argumentSet("hashCode1", id(TrieForkJoinListTest::hashCode1)),
+            argumentSet("hashCode2", id(TrieForkJoinListTest::hashCode2)),
+            argumentSet("set1", id(TrieForkJoinListTest::getSet1)),
             argumentSet("subListSet1", id(TrieForkJoinListTest::subListSet1)),
             argumentSet("join1", id(TrieForkJoinListTest::join1)),
             argumentSet("join2", id(TrieForkJoinListTest::join2)),
@@ -59,6 +61,7 @@ class TrieForkJoinListTest {
             argumentSet("joinAtIndex11", id(TrieForkJoinListTest::joinAtIndex11)),
             argumentSet("joinAtIndex12", id(TrieForkJoinListTest::joinAtIndex12)),
             argumentSet("joinAtIndex13", id(TrieForkJoinListTest::joinAtIndex13)),
+            argumentSet("add1", id(TrieForkJoinListTest::add1)),
             argumentSet("addAll1", id(TrieForkJoinListTest::addAll1)),
             argumentSet("addAll2", id(TrieForkJoinListTest::addAll2)),
             argumentSet("addAll3", id(TrieForkJoinListTest::addAll3)),
@@ -74,6 +77,24 @@ class TrieForkJoinListTest {
             argumentSet("addAllAtIndex9", id(TrieForkJoinListTest::addAllAtIndex9)),
             argumentSet("addAllAtIndex10", id(TrieForkJoinListTest::addAllAtIndex10)),
             argumentSet("subListFork1", id(TrieForkJoinListTest::subListFork1)),
+            argumentSet("subListFork2", id(TrieForkJoinListTest::subListFork2)),
+            argumentSet("subListFork3", id(TrieForkJoinListTest::subListFork3)),
+            argumentSet("subListFork4", id(TrieForkJoinListTest::subListFork4)),
+            argumentSet("subListFork5", id(TrieForkJoinListTest::subListFork5)),
+            argumentSet("subListFork6", id(TrieForkJoinListTest::subListFork6)),
+            argumentSet("subListFork7", id(TrieForkJoinListTest::subListFork7)),
+            argumentSet("subListFork8", id(TrieForkJoinListTest::subListFork8)),
+            argumentSet("subListFork9", id(TrieForkJoinListTest::subListFork9)),
+            argumentSet("subListFork10", id(TrieForkJoinListTest::subListFork10)),
+            argumentSet("subListFork11", id(TrieForkJoinListTest::subListFork11)),
+            argumentSet("subListFork12", id(TrieForkJoinListTest::subListFork12)),
+            argumentSet("subListFork13", id(TrieForkJoinListTest::subListFork13)),
+            argumentSet("subListFork14", id(TrieForkJoinListTest::subListFork14)),
+            argumentSet("removeAtIndex1", id(TrieForkJoinListTest::removeAtIndex1)),
+            argumentSet("removeAtIndex2", id(TrieForkJoinListTest::removeAtIndex2)),
+            argumentSet("removeAtIndex3", id(TrieForkJoinListTest::removeAtIndex3)),
+            argumentSet("removeAtIndex4", id(TrieForkJoinListTest::removeAtIndex4)),
+            argumentSet("removeAtIndex5", id(TrieForkJoinListTest::removeAtIndex5)),
             argumentSet("removeRange1", id(TrieForkJoinListTest::removeRange1)),
             argumentSet("removeRange2", id(TrieForkJoinListTest::removeRange2)),
             argumentSet("removeRange3", id(TrieForkJoinListTest::removeRange3)),
@@ -86,6 +107,13 @@ class TrieForkJoinListTest {
             argumentSet("removeRange10", id(TrieForkJoinListTest::removeRange10)),
             argumentSet("removeRange11", id(TrieForkJoinListTest::removeRange11)),
             argumentSet("removeRange12", id(TrieForkJoinListTest::removeRange12)),
+            argumentSet("removeRange13", id(TrieForkJoinListTest::removeRange13)),
+            argumentSet("removeIf1", id(TrieForkJoinListTest::removeIf1)),
+            argumentSet("removeIf2", id(TrieForkJoinListTest::removeIf2)),
+            argumentSet("removeAll1", id(TrieForkJoinListTest::removeAll1)),
+            argumentSet("removeAll2", id(TrieForkJoinListTest::removeAll2)),
+            argumentSet("retainAll1", id(TrieForkJoinListTest::retainAll1)),
+            argumentSet("retainAll2", id(TrieForkJoinListTest::retainAll2)),
             argumentSet("toArray1", id(TrieForkJoinListTest::toArray1)),
             argumentSet("toArray2", id(TrieForkJoinListTest::toArray2)),
             argumentSet("toArray3", id(TrieForkJoinListTest::toArray3)),
@@ -124,6 +152,8 @@ class TrieForkJoinListTest {
 //            .mapToObj(i -> argumentSet("fuzz" + i, id(factory -> fuzz(i, factory))))
 //        );
     }
+    
+    // TODO: Add tests for subList methods, reversed list/subList methods, Sizes.OfInt, and a few knickknacks
     
     @ParameterizedTest
     @MethodSource("provideCreators")
@@ -368,6 +398,17 @@ class TrieForkJoinListTest {
         return left;
     }
     
+    static ForkJoinList<Integer> add1(Factory factory) {
+        // Repeatedly add to a relaxed list, including creating a new root
+        int size = SPAN*(SPAN+1);
+        ForkJoinList<Integer> list = listOfSize(factory, size);
+        list.subList(size - 5*SPAN - 3, size - 5*SPAN).clear();
+        for (int i = 0; i < size; i++) {
+            list.add(i);
+        }
+        return list;
+    }
+    
     static ForkJoinList<Integer> addAll1(Factory factory) {
         // Add empty list
         ForkJoinList<Integer> list = listOfSize(factory, 10000);
@@ -488,9 +529,148 @@ class TrieForkJoinListTest {
         return list;
     }
     
+    // TODO: Return both subList and original list, update all elements in both to verify no interference
+    
     static ForkJoinList<Integer> subListFork1(Factory factory) {
+        // Fork interior subList
         ForkJoinList<Integer> list = listOfSize(factory, 10000);
         return list.subList(100, 9900).fork();
+    }
+    
+    static ForkJoinList<Integer> subListFork2(Factory factory) {
+        // Fork prefix that ends in the root
+        ForkJoinList<Integer> list = listOfSize(factory, 10000);
+        return list.subList(0, 9900).fork();
+    }
+    
+    static ForkJoinList<Integer> subListFork3(Factory factory) {
+        // Fork suffix that starts in the root
+        ForkJoinList<Integer> list = listOfSize(factory, 10000);
+        return list.subList(100, list.size()).fork();
+    }
+    
+    static ForkJoinList<Integer> subListFork4(Factory factory) {
+        // Fork empty subList
+        ForkJoinList<Integer> list = listOfSize(factory, 10000);
+        return list.subList(100, 100).fork();
+    }
+    
+    static ForkJoinList<Integer> subListFork5(Factory factory) {
+        // Fork subList over entire list
+        ForkJoinList<Integer> list = listOfSize(factory, 10000);
+        return list.subList(0, list.size()).fork();
+    }
+    
+    static ForkJoinList<Integer> subListFork6(Factory factory) {
+        // Fork prefix that ends in the tail
+        int size = SPAN*SPAN;
+        ForkJoinList<Integer> list = listOfSize(factory, size);
+        return list.subList(0, size - SPAN/2).fork();
+    }
+    
+    static ForkJoinList<Integer> subListFork7(Factory factory) {
+        // Fork prefix that ends at the tail
+        int size = SPAN*SPAN;
+        ForkJoinList<Integer> list = listOfSize(factory, size);
+        return list.subList(0, size - SPAN).fork();
+    }
+    
+    static ForkJoinList<Integer> subListFork8(Factory factory) {
+        // Fork prefix of relaxed list
+        ForkJoinList<Integer> list = factory.get();
+        zigZagAdd(list, 1000);
+        return list.subList(0, 867).fork();
+    }
+    
+    static ForkJoinList<Integer> subListFork9(Factory factory) {
+        // Fork suffix that starts in the tail
+        int size = SPAN*SPAN;
+        ForkJoinList<Integer> list = listOfSize(factory, size);
+        return list.subList(size - SPAN/2, size).fork();
+    }
+    
+    static ForkJoinList<Integer> subListFork10(Factory factory) {
+        // Fork subList that starts and ends in the tail
+        int size = SPAN*SPAN;
+        ForkJoinList<Integer> list = listOfSize(factory, size);
+        return list.subList(size - 3*SPAN/4, size - SPAN/4).fork();
+    }
+    
+    static ForkJoinList<Integer> subListFork11(Factory factory) {
+        // Fork subList that starts in the root and ends at the tail
+        int size = SPAN*SPAN;
+        ForkJoinList<Integer> list = listOfSize(factory, size);
+        return list.subList(size/2, size - SPAN).fork();
+    }
+    
+    static ForkJoinList<Integer> subListFork12(Factory factory) {
+        // Fork subList that starts in the root and ends in the tail
+        int size = SPAN*SPAN;
+        ForkJoinList<Integer> list = listOfSize(factory, size);
+        return list.subList(size/2, size - SPAN/4).fork();
+    }
+    
+    static ForkJoinList<Integer> subListFork13(Factory factory) {
+        // Fork subList that starts and ends in the same leaf node in the root
+        int size = SPAN*SPAN;
+        ForkJoinList<Integer> list = listOfSize(factory, size);
+        return list.subList(size/2+2, size/2+4).fork();
+    }
+    
+    static ForkJoinList<Integer> subListFork14(Factory factory) {
+        // Fork subList of a relaxed list that starts and ends in the root
+        ForkJoinList<Integer> list = factory.get();
+        zigZagAdd(list, 400);
+        return list.subList(250, 500).fork();
+    }
+    
+    static List<Integer> removeAtIndex1(Factory factory) {
+        // Remove all by popping off the end
+        ForkJoinList<Integer> list = listOfSize(factory, 100);
+        List<Integer> result = new ArrayList<>();
+        while (!list.isEmpty()) {
+            result.add(list.remove(list.size()-1));
+        }
+        return result;
+    }
+    
+    static List<Integer> removeAtIndex2(Factory factory) {
+        // Remove all by popping off the end (forked list)
+        ForkJoinList<Integer> list = listOfSize(factory, 100).fork();
+        List<Integer> result = new ArrayList<>();
+        while (!list.isEmpty()) {
+            result.add(list.remove(list.size()-1));
+        }
+        return result;
+    }
+    
+    static List<Integer> removeAtIndex3(Factory factory) {
+        // Remove all by popping off the end
+        // First construct a list with a deep narrow root, to hit special handling as we promote new tails
+        int pow2 = SPAN*SPAN;
+        ForkJoinList<Integer> list = listOfSize(factory, SPAN*pow2)
+            .subList(SPAN*(pow2-1)/2, SPAN*(pow2+3)/2)
+            .fork();
+        List<Integer> result = new ArrayList<>();
+        while (!list.isEmpty()) {
+            result.add(list.remove(list.size()-1));
+        }
+        return result;
+    }
+    
+    static List<Integer> removeAtIndex4(Factory factory) {
+        // Remove all by popping off the front
+        ForkJoinList<Integer> list = listOfSize(factory, 100);
+        List<Integer> result = new ArrayList<>();
+        while (!list.isEmpty()) {
+            result.add(list.remove(0));
+        }
+        return result;
+    }
+    
+    static Object removeAtIndex5(Factory factory) {
+        // Remove only element from list that does not own its node (niche code path)
+        return listOfSize(factory, 1).fork().removeLast();
     }
     
     static ForkJoinList<Integer> removeRange1(Factory factory) {
@@ -522,6 +702,13 @@ class TrieForkJoinListTest {
     }
     
     static ForkJoinList<Integer> removeRange5(Factory factory) {
+        // Remove nothing (middle)
+        ForkJoinList<Integer> list = listOfSize(factory, 10000);
+        list.subList(100, 100).clear();
+        return list;
+    }
+    
+    static ForkJoinList<Integer> removeRange6(Factory factory) {
         // Remove prefix ending at tail
         int size = SPAN*1000;
         ForkJoinList<Integer> list = listOfSize(factory, size);
@@ -529,7 +716,7 @@ class TrieForkJoinListTest {
         return list;
     }
     
-    static ForkJoinList<Integer> removeRange6(Factory factory) {
+    static ForkJoinList<Integer> removeRange7(Factory factory) {
         // Remove prefix ending in tail
         int size = SPAN*1000;
         ForkJoinList<Integer> list = listOfSize(factory, size);
@@ -537,14 +724,14 @@ class TrieForkJoinListTest {
         return list;
     }
     
-    static ForkJoinList<Integer> removeRange7(Factory factory) {
+    static ForkJoinList<Integer> removeRange8(Factory factory) {
         // Remove prefix ending in root
         ForkJoinList<Integer> list = listOfSize(factory, 10000);
         list.subList(0, 9000).clear();
         return list;
     }
     
-    static ForkJoinList<Integer> removeRange8(Factory factory) {
+    static ForkJoinList<Integer> removeRange9(Factory factory) {
         // Remove suffix starting at tail
         int size = SPAN*1000;
         ForkJoinList<Integer> list = listOfSize(factory, size);
@@ -552,7 +739,7 @@ class TrieForkJoinListTest {
         return list;
     }
     
-    static ForkJoinList<Integer> removeRange9(Factory factory) {
+    static ForkJoinList<Integer> removeRange10(Factory factory) {
         // Remove suffix starting in tail
         int size = SPAN*1000;
         ForkJoinList<Integer> list = listOfSize(factory, size);
@@ -560,14 +747,14 @@ class TrieForkJoinListTest {
         return list;
     }
     
-    static ForkJoinList<Integer> removeRange10(Factory factory) {
+    static ForkJoinList<Integer> removeRange11(Factory factory) {
         // Remove suffix starting in root
         ForkJoinList<Integer> list = listOfSize(factory, 10000);
         list.subList(9000, 10000).clear();
         return list;
     }
     
-    static ForkJoinList<Integer> removeRange11(Factory factory) {
+    static ForkJoinList<Integer> removeRange12(Factory factory) {
         // Remove range that starts and ends in the tail
         int size = SPAN*1000;
         ForkJoinList<Integer> list = listOfSize(factory, size);
@@ -575,11 +762,57 @@ class TrieForkJoinListTest {
         return list;
     }
     
-    static ForkJoinList<Integer> removeRange12(Factory factory) {
+    static ForkJoinList<Integer> removeRange13(Factory factory) {
         // Remove range that starts in the root and ends in the tail
         int size = SPAN*1000;
         ForkJoinList<Integer> list = listOfSize(factory, size);
         list.subList(100, size-SPAN/2).clear();
+        return list;
+    }
+    
+    static ForkJoinList<Integer> removeIf1(Factory factory) {
+        // Remove evens after prefix
+        ForkJoinList<Integer> list = listOfSize(factory, 1000);
+        list.removeIf(i -> i > 200 && i%2 == 0);
+        return list;
+    }
+    
+    static ForkJoinList<Integer> removeIf2(Factory factory) {
+        // Remove nothing
+        ForkJoinList<Integer> list = listOfSize(factory, 1000);
+        list.removeIf(i -> i > 2000);
+        return list;
+    }
+    
+    static ForkJoinList<Integer> removeAll1(Factory factory) {
+        // Remove partially-overlapping collection
+        ForkJoinList<Integer> list = listOfSize(factory, 1000);
+        List<Integer> toRemove = IntStream.range(300, 600).map(i -> i*2).boxed().toList();
+        list.removeAll(toRemove);
+        return list;
+    }
+    
+    static ForkJoinList<Integer> removeAll2(Factory factory) {
+        // Remove non-overlapping collection
+        ForkJoinList<Integer> list = listOfSize(factory, 1000);
+        List<Integer> toRemove = IntStream.range(1200, 1800).boxed().toList();
+        list.removeAll(toRemove);
+        return list;
+    }
+    
+    static ForkJoinList<Integer> retainAll1(Factory factory) {
+        // Retain partially-overlapping collection
+        ForkJoinList<Integer> list = listOfSize(factory, 1000);
+        List<Integer> toRemove = IntStream.range(300, 600).map(i -> i*2).boxed().toList();
+        list.retainAll(toRemove);
+        return list;
+    }
+    
+    static ForkJoinList<Integer> retainAll2(Factory factory) {
+        // Retain non-overlapping collection
+        ForkJoinList<Integer> list = listOfSize(factory, 1000);
+        List<Integer> toRemove = IntStream.range(1200, 1800).boxed().toList();
+        list.retainAll(toRemove);
         return list;
     }
     
@@ -906,6 +1139,17 @@ class TrieForkJoinListTest {
         return stream.map(i -> i+1).parallel().toList();
     }
     
+    static List<Integer> getSet1(Factory factory) {
+        // Make a meandering list, reverse it, then add the reversed list to itself
+        ForkJoinList<Integer> list = factory.get();
+        zigZagAdd(list, 2000);
+        Collections.reverse(list); // Calls get() and set()
+        for (int i = list.size()-1; i >= 0; i--) {
+            list.add(list.get(i));
+        }
+        return list;
+    }
+    
     static Object subListSet1(Factory factory) {
         // TODO: For list size 100, subList [20,80),
         //  it looked like the last subList node could have been shared but wasn't
@@ -915,11 +1159,131 @@ class TrieForkJoinListTest {
         return subList.set(300, -1);
     }
     
+    static int hashCode1(Factory factory) {
+        // Empty list hashCode
+        return factory.get().hashCode();
+    }
+    
+    static int hashCode2(Factory factory) {
+        // Populated list hashCode
+        return listOfSize(factory, 1000).hashCode();
+    }
+    
+    @Test
+    void testEquals1() {
+        // List equals itself
+        List<Integer> list = listOfSize(TRIE_FJL, 100);
+        assertTrue(list.equals(list));
+    }
+    
+    @Test
+    void testEquals2() {
+        // List does not equal non-List
+        List<Integer> list = listOfSize(TRIE_FJL, 100);
+        Set<Integer> set = new HashSet<>(list);
+        assertFalse(list.equals(set));
+        assertFalse(set.equals(list));
+    }
+    
+    @Test
+    void testEquals3() {
+        // List does not equal other List with different size
+        List<Integer> list1 = listOfSize(TRIE_FJL, 100);
+        List<Integer> list2 = listOfSize(TRIE_FJL, 80);
+        assertFalse(list1.equals(list2));
+        assertFalse(list2.equals(list1));
+    }
+    
+    @Test
+    void testEquals4() {
+        // List does not equal other List with different elements
+        List<Integer> list1 = IntStream.range(0, 100).boxed().collect(Collectors.toCollection(TrieForkJoinList::new));
+        List<Integer> list2 = IntStream.range(0, 100).boxed().collect(Collectors.toCollection(ArrayList::new));
+        list2.set(60, 1);
+        assertFalse(list1.equals(list2));
+        assertFalse(list2.equals(list1));
+    }
+    
+    @Test
+    void testEquals5() {
+        // List equals other List with same elements
+        List<Integer> list1 = IntStream.range(0, 100).boxed().collect(Collectors.toCollection(TrieForkJoinList::new));
+        List<Integer> list2 = IntStream.range(0, 100).boxed().collect(Collectors.toCollection(ArrayList::new));
+        assertTrue(list1.equals(list2));
+        assertTrue(list2.equals(list1));
+    }
+    
+    @Test
+    void testGetFirstLast1() {
+        List<Integer> list = listOfSize(TRIE_FJL, 100);
+        assertEquals(0, list.getFirst());
+        assertEquals(99, list.getLast());
+        list.set(0, 6);
+        list.set(list.size()-1, 8);
+        assertEquals(6, list.getFirst());
+        assertEquals(8, list.getLast());
+    }
+    
+    @Test
+    void testGetFirstLast2() {
+        // Small (tail-only) list
+        List<Integer> list = listOfSize(TRIE_FJL, 3);
+        assertEquals(0, list.getFirst());
+        assertEquals(2, list.getLast());
+        list.set(0, 4);
+        list.set(list.size()-1, 9);
+        assertEquals(4, list.getFirst());
+        assertEquals(9, list.getLast());
+    }
+    
+    @Test
+    void testGetFirstLast3() {
+        List<Integer> list = new TrieForkJoinList<>();
+        assertThrows(NoSuchElementException.class, list::getFirst);
+        assertThrows(NoSuchElementException.class, list::getLast);
+    }
+    
+    @Test
+    void testSizeTooBig() {
+        ForkJoinList<Integer> list = new TrieForkJoinList<>(List.of(1));
+        assertThrows(OutOfMemoryError.class, () -> {
+            // Last join will attempt to set size = 2^31 > Integer.MAX_VALUE = 2^31-1
+            // The actual memory usage here is pretty reasonable due to structural sharing,
+            // but the implementation is not designed to support sizes > Integer.MAX_VALUE,
+            // and will throw OOME to protect itself.
+            // (java.util.ArrayList also does this, but would necessarily consume a lot of memory to get to that size.)
+            for (int i = 1; i <= 31; i++) {
+                list.join(list);
+            }
+        });
+    }
+    
     @Test
     void testJoinOutOfBounds() {
         ForkJoinList<Integer> list = new TrieForkJoinList<>();
         ForkJoinList<Integer> toInsert = listOfSize(TRIE_FJL, 10);
         assertThrows(IndexOutOfBoundsException.class, () -> list.join(1, toInsert));
+    }
+    
+    @Test
+    void testSubListOutOfBounds1() {
+        // To index out of bounds
+        ForkJoinList<Integer> list = listOfSize(TRIE_FJL, 10);
+        assertThrows(IndexOutOfBoundsException.class, () -> list.subList(5, 15));
+    }
+    
+    @Test
+    void testSubListOutOfBounds2() {
+        // From index out of bounds
+        ForkJoinList<Integer> list = listOfSize(TRIE_FJL, 10);
+        assertThrows(IndexOutOfBoundsException.class, () -> list.subList(-5, 10));
+    }
+    
+    @Test
+    void testSubListOutOfBounds3() {
+        // From index > to index
+        ForkJoinList<Integer> list = listOfSize(TRIE_FJL, 10);
+        assertThrows(IllegalArgumentException.class, () -> list.subList(8, 5));
     }
     
     @Test
