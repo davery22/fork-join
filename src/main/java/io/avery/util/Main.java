@@ -26,7 +26,42 @@ public class Main {
     //  - Seemingly not in join(), assuming both sides start with a full rightmost leaf
     
     public static void main(String[] args) {
-        iterFuzz();
+        joinBench2();
+    }
+    
+    static void joinBench2() {
+        int size = 100_000;
+        List<Integer> bootstrap1 = IntStream.range(0, size).boxed().toList();
+        List<Integer> bootstrap2 = IntStream.range(0, size).boxed().toList();
+        ForkJoinList<Integer> list1 = new TrieForkJoinList<>(bootstrap1);
+        ForkJoinList<Integer> list2 = new TrieForkJoinList<>(bootstrap2);
+        int sum = 0;
+        for (int i = 0; i < 100_000_000; i++) {
+            var fork = list1.fork();
+//            fork.addAll(list2);
+            fork.join(list2);
+            sum += fork.size();
+        }
+        System.out.println(sum);
+    }
+    
+    static void joinBench() {
+        int size = 10_000;
+        List<Integer> bootstrap1 = IntStream.range(0, size).boxed().toList();
+        List<Integer> bootstrap2 = IntStream.range(0, size).boxed().toList();
+//        List<Integer> list1 = new ArrayList<>(bootstrap1);
+//        List<Integer> list2 = new ArrayList<>(bootstrap2);
+        ForkJoinList<Integer> list1 = new TrieForkJoinList<>(bootstrap1);
+        ForkJoinList<Integer> list2 = new TrieForkJoinList<>(bootstrap2);
+        long start = System.nanoTime();
+//        Instant start = Instant.now();
+//        list1.addAll(list2);
+        list1.join(list2);
+        long end = System.nanoTime();
+//        Instant end = Instant.now();
+        System.out.println(list1.size());
+        System.out.println((double) (end - start)/1e9 + " S");
+//        System.out.println(Duration.between(start, end));
     }
     
     static void iterFuzz() {

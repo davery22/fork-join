@@ -2313,77 +2313,89 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     private static final ParentNode EMPTY_NODE = new ParentNode(new Object[0]);
     
     private static void concatSubTree(Node[] nodes, int leftShift, int rightShift, boolean isRightmost) {
-        // TODO: Avoid editable if no rebalancing needed?
+        record State(Node left, Node right, boolean isRightmost) {}
+        
+        State[] stack = new State[Math.max(leftShift, rightShift) / SHIFT];
         Node left = nodes[0], right = nodes[1];
-        if (leftShift > rightShift) {
-            int childShift = leftShift - SHIFT;
-            nodes[0] = left.getEditableChild(left.children.length-1);
-            concatSubTree(nodes, childShift, rightShift, true);
-            
-            // Right child may be empty after recursive call - due to rebalancing - but if not we introduce a parent
-            ParentNode newRight = EMPTY_NODE;
-            if (nodes[1] != EMPTY_NODE) {
-                int childSize = getSizeIfNeedsSizedParent(nodes[1], true, childShift);
-                if (childSize != -1) {
-                    Sizes sizes = Sizes.of(leftShift, 1);
-                    sizes.set(0, childSize);
-                    (newRight = new SizedParentNode(new Object[]{ nodes[1] }, sizes)).claim(0);
-                }
-                else {
-                    (newRight = new ParentNode(new Object[]{ nodes[1] })).claim(0);
-                }
-            }
-            right = newRight; // This might be EMPTY_NODE
-            left.children[left.children.length-1] = nodes[0];
+        
+        // TODO: Avoid editable if no rebalancing needed?
+        int i = stack.length-1;
+        for (; leftShift > rightShift; leftShift -= SHIFT) {
+            stack[i--] = new State(left, null, true);
+            left = left.getEditableChild(left.children.length-1);
         }
-        else if (leftShift < rightShift) {
-            int childShift = rightShift - SHIFT;
-            boolean isChildRightmost = isRightmost && right.children.length == 1;
-            nodes[1] = right.getEditableChild(0);
-            concatSubTree(nodes, leftShift, childShift, isChildRightmost);
-            
-            // Left child is never empty after recursive call, because we introduce a parent for a non-empty child,
-            // and we always rebalance by shifting left, so as we come up from recursion the left remains non-empty
-            ParentNode newLeft;
-            int childSize = getSizeIfNeedsSizedParent(nodes[0], isChildRightmost && nodes[1] == EMPTY_NODE, childShift);
-            if (childSize != -1) {
-                Sizes sizes = Sizes.of(rightShift, 1);
-                sizes.set(0, childSize);
-                (newLeft = new SizedParentNode(new Object[]{ nodes[0] }, sizes)).claim(0);
-            }
-            else {
-                (newLeft = new ParentNode(new Object[]{ nodes[0] })).claim(0);
-            }
-            left = newLeft;
-            right.children[0] = nodes[1]; // This might be EMPTY_NODE
-            leftShift = rightShift; // Adjust so we can consistently use leftShift below
+        for (; rightShift > leftShift; rightShift -= SHIFT) {
+            stack[i--] = new State(null, right, isRightmost);
+            isRightmost = isRightmost && right.children.length == 1;
+            right = right.getEditableChild(0);
         }
-        else if (leftShift > 0) { // leftShift == rightShift
-            int childShift = leftShift - SHIFT;
-            boolean isChildRightmost = isRightmost && right.children.length == 1;
-            nodes[0] = left.getEditableChild(left.children.length-1);
-            nodes[1] = right.getEditableChild(0);
-            concatSubTree(nodes, childShift, childShift, isChildRightmost);
-            
-            left.children[left.children.length-1] = nodes[0];
-            right.children[0] = nodes[1]; // This might be EMPTY_NODE
-        }
-        else { // leftShift == rightShift == 0 (leaf-level)
-            int leftLen = left.children.length, rightLen = right.children.length;
-            if (leftLen + rightLen <= SPAN) {
-                // Right fits in left - copy it over
-                Object[] newChildren = Arrays.copyOf(left.children, leftLen + rightLen);
-                System.arraycopy(right.children, 0, newChildren, leftLen, rightLen);
-                nodes[0] = new Node(newChildren);
-                nodes[1] = EMPTY_NODE;
-            }
-            return;
+        for (; leftShift > 0; leftShift -= SHIFT) {
+            stack[i--] = new State(left, right, isRightmost);
+            isRightmost = isRightmost && right.children.length == 1;
+            left = left.getEditableChild(left.children.length-1);
+            right = right.getEditableChild(0);
         }
         
-        boolean isRightFirstChildEmpty = nodes[1] == EMPTY_NODE;
+        int leftLen = left.children.length, rightLen = right.children.length;
+        if (leftLen + rightLen <= SPAN) { // TODO: || isRightmost ?
+            // Right fits in left - copy it over
+            Object[] newChildren = Arrays.copyOf(left.children, leftLen + rightLen);
+            System.arraycopy(right.children, 0, newChildren, leftLen, rightLen);
+            left = new Node(newChildren);
+            right = EMPTY_NODE;
+        }
         nodes[0] = left;
         nodes[1] = right;
-        rebalance(nodes, leftShift, isRightmost, isRightFirstChildEmpty);
+        
+        for (i = 0; i < stack.length; i++) {
+            left = nodes[0];
+            right = nodes[1];
+            boolean isRightFirstChildEmpty = right == EMPTY_NODE;
+            State state = stack[i];
+            
+            if (state.left == null) {
+                // Left child is never empty after recursive call, because we introduce a parent for a non-empty child,
+                // and we always rebalance by shifting left, so as we come up from recursion the left remains non-empty
+                ParentNode newLeft;
+                int childSize = getSizeIfNeedsSizedParent(left, isRightmost && right == EMPTY_NODE, leftShift);
+                if (childSize != -1) {
+                    Sizes sizes = Sizes.of(leftShift + SHIFT, 1);
+                    sizes.set(0, childSize);
+                    (newLeft = new SizedParentNode(new Object[]{ left }, sizes)).claim(0);
+                }
+                else {
+                    (newLeft = new ParentNode(new Object[]{ left })).claim(0);
+                }
+                state.right.children[0] = right; // This might be EMPTY_NODE
+                nodes[0] = newLeft;
+                nodes[1] = state.right;
+            }
+            else if (state.right == null) {
+                ParentNode newRight = EMPTY_NODE;
+                if (right != EMPTY_NODE) {
+                    int childSize = getSizeIfNeedsSizedParent(right, true, leftShift);
+                    if (childSize != -1) {
+                        Sizes sizes = Sizes.of(leftShift + SHIFT, 1);
+                        sizes.set(0, childSize);
+                        (newRight = new SizedParentNode(new Object[]{ right }, sizes)).claim(0);
+                    }
+                    else {
+                        (newRight = new ParentNode(new Object[]{ right })).claim(0);
+                    }
+                }
+                state.left.children[state.left.children.length-1] = left;
+                nodes[0] = state.left;
+                nodes[1] = newRight; // This might be EMPTY_NODE
+            }
+            else {
+                state.left.children[state.left.children.length-1] = left;
+                state.right.children[0] = right; // This might be EMPTY_NODE
+                nodes[0] = state.left;
+                nodes[1] = state.right;
+            }
+            
+            rebalance(nodes, leftShift += SHIFT, isRightmost = state.isRightmost, isRightFirstChildEmpty);
+        }
     }
     
     // Should we combine left/right Nodes at the end of rebalance?
@@ -2444,7 +2456,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                     nodes[0] = left.refreshSizesIfRightmostChildChanged(false, shift);
                 }
             }
-            else if (leftChildren.length + rightChildren.length <= SPAN) {
+            else if (leftChildren.length + rightChildren.length <= SPAN) { // TODO: || isRightmost ?
                 // Right fits in left
                 left.shiftChildren(0, 0, rightChildren.length, right, 0);
                 nodes[0] = left.refreshSizes(isRightmost, shift);
@@ -2530,7 +2542,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         
         if (rightDeathRow == 0) { // Did not update right - must have updated left only (and leftDeathRow != 0)
             int remainingLeft = leftChildren.length - Long.bitCount(leftDeathRow);
-            if (remainingLeft + rightChildren.length <= SPAN) {
+            if (remainingLeft + rightChildren.length <= SPAN) { // TODO: || isRightmost ?
                 // Removing some from left makes right fit in
                 left.shiftChildren(leftDeathRow, 0, rightChildren.length, right, 0);
                 nodes[0] = left.refreshSizes(isRightmost, shift);
@@ -2545,7 +2557,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         else if (!updatedLeft) { // Updated right only
             int remainingRight = rightChildren.length - Long.bitCount(rightDeathRow);
-            if (leftChildren.length + remainingRight <= SPAN) {
+            if (leftChildren.length + remainingRight <= SPAN) { // TODO: || isRightmost ?
                 // Removing some from right makes it fit in left
                 left.shiftChildren(0, 0, remainingRight, right, rightDeathRow);
                 nodes[0] = left.refreshSizes(isRightmost, shift);
