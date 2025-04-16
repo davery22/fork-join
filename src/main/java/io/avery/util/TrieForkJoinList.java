@@ -32,7 +32,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     // If changed, ParentNode.owns (and operations on it) must be updated to use a type of the appropriate width
     //  - eg: 4 => short, 5 => int, 6 => long
     // SHIFT > 6 is possible, but requires more work to switch to long[] owns, and long[] deathRows in rebalance()
-    static final int SHIFT = 4;
+    static final int SHIFT = 5;
     static final int SPAN = 1 << SHIFT;
     static final int MASK = SPAN-1;
     static final int MARGIN = 2;
@@ -3174,9 +3174,9 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         // SPAN=32 -> int
         // SPAN=64 -> long
         // SPAN>64 -> long[]
-        short owns;
+        int owns;
         
-        ParentNode(short owns, Object[] children) {
+        ParentNode(int owns, Object[] children) {
             super(children);
             this.owns = owns;
         }
@@ -3188,7 +3188,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         
         ParentNode(Object[] children, boolean owned) {
             super(children);
-            this.owns = (short) ((1 << children.length) - 1);
+            this.owns = (int) ((1 << children.length) - 1);
         }
         
         boolean owns(int i) {
@@ -3220,16 +3220,16 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             owns &= mask(from) | ~mask(to);
         }
         
-        static short skipOwnership(short owns, int skip, int keep) {
-            return (short) ((owns >>> skip) & mask(keep));
+        static int skipOwnership(int owns, int skip, int keep) {
+            return (int) ((owns >>> skip) & mask(keep));
         }
         
-        static short takeOwnership(int keep, int take, short owns) {
-            return (short) ((owns & mask(take)) << keep);
+        static int takeOwnership(int keep, int take, int owns) {
+            return (int) ((owns & mask(take)) << keep);
         }
         
-        static short removeFromOwnership(short owns, int remove) {
-            return (short) ((owns & mask(remove)) | ((owns >>> 1) & ~mask(remove)));
+        static int removeFromOwnership(int owns, int remove) {
+            return (int) ((owns & mask(remove)) | ((owns >>> 1) & ~mask(remove)));
         }
         
         static int mask(int shift) {
@@ -3348,7 +3348,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             System.arraycopy(from.children, 0, newChildren, keep, take);
             
             // Handle ownership
-            short newOwns = (short) ((isOwned ? skipOwnership(owns, skip, keep) : 0) | (isFromOwned ? takeOwnership(keep, take, ((ParentNode) from).owns) : 0));
+            var newOwns = (int) ((isOwned ? skipOwnership(owns, skip, keep) : 0) | (isFromOwned ? takeOwnership(keep, take, ((ParentNode) from).owns) : 0));
             if (newSizes != null) {
                 return new SizedParentNode(newOwns, newChildren, newSizes);
             }
@@ -3367,7 +3367,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             
             // Remove deleted children
             int keep, newLen;
-            short newOwns = owns;
+            var newOwns = owns;
             Object[] newChildren;
             if (deathRow != 0) {
                 Object[] oldChildren = children;
@@ -3396,7 +3396,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             
             if (take != 0) {
                 // Add adopted children
-                short fromOwns = from.owns;
+                var fromOwns = from.owns;
                 Object[] fromChildren = from.children;
                 if (fromDeathRow != 0) {
                     for (int i = 0; keep < newLen; i++) {
@@ -3523,10 +3523,9 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     }
     
     private static class SizedParentNode extends ParentNode {
-        // TODO: Weigh the cost of storing Sizes directly, instead of allocating every time we touch sizes.
         Object sizes;
         
-        SizedParentNode(short owns, Object[] children, Sizes sizes) {
+        SizedParentNode(int owns, Object[] children, Sizes sizes) {
             super(owns, children);
             this.sizes = sizes.unwrap();
         }
@@ -3690,7 +3689,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             System.arraycopy(from.children, 0, newChildren, keep, take);
             
             // Handle ownership
-            short newOwns = (short) ((isOwned ? skipOwnership(owns, skip, keep) : 0) | (isFromOwned ? takeOwnership(keep, take, ((ParentNode) from).owns) : 0));
+            var newOwns = (int) ((isOwned ? skipOwnership(owns, skip, keep) : 0) | (isFromOwned ? takeOwnership(keep, take, ((ParentNode) from).owns) : 0));
             if (newSizes == null) {
                 return new ParentNode(newOwns, newChildren);
             }
