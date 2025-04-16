@@ -3524,25 +3524,25 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     
     private static class SizedParentNode extends ParentNode {
         // TODO: Weigh the cost of storing Sizes directly, instead of allocating every time we touch sizes.
-        Object sizes;
+        Sizes sizes;
         
         SizedParentNode(short owns, Object[] children, Sizes sizes) {
             super(owns, children);
-            this.sizes = sizes.unwrap();
+            this.sizes = sizes;
         }
         
         SizedParentNode(Object[] children, Sizes sizes) {
             super(children);
-            this.sizes = sizes.unwrap();
+            this.sizes = sizes;
         }
         
         SizedParentNode(Object[] children, Sizes sizes, boolean owned) {
             super(children, owned);
-            this.sizes = sizes.unwrap();
+            this.sizes = sizes;
         }
         
         Sizes sizes() {
-            return Sizes.wrap(sizes);
+            return sizes;
         }
         
         @Override
@@ -3560,7 +3560,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 if (isOwned) {
                     children = newChildren;
                     owns |= ~mask(oldLen); // Take ownership of new slots if len > oldLen (trailing ownership is ignored)
-                    sizes = newSizes.unwrap();
+                    sizes = newSizes;
                     return this;
                 }
                 return new SizedParentNode((short) ~mask(oldLen), newChildren, newSizes);
@@ -3579,7 +3579,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 if (isOwned) {
                     owns >>>= from;
                     children = newChildren;
-                    sizes = newSizes.unwrap();
+                    sizes = newSizes;
                     return this;
                 }
                 return new SizedParentNode(newChildren, newSizes);
@@ -3597,7 +3597,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 if (isOwned) {
                     owns >>>= from; // shift off prefix; suffix bits are simply ignored
                     children = newChildren;
-                    sizes = newSizes.unwrap();
+                    sizes = newSizes;
                     return this;
                 }
                 return new SizedParentNode(newChildren, newSizes);
@@ -3699,7 +3699,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             }
             owns = newOwns;
             children = newChildren;
-            sizes = newSizes.unwrap();
+            sizes = newSizes;
             return this;
         }
         
@@ -3709,7 +3709,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             if (newSizes == null) {
                 return new ParentNode(owns, children);
             }
-            sizes = newSizes.unwrap();
+            sizes = newSizes;
             return this;
         }
         
@@ -3790,17 +3790,17 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
     }
     
-    private static abstract class Sizes {
-        abstract int get(int i);
-        abstract void set(int i, int size);
-        abstract Object unwrap();
-        abstract Sizes copy();
-        abstract Sizes copy(int len);
-        abstract Sizes copyOfRange(int from, int to);
-        abstract Sizes arrayCopy(Sizes src, int srcPos, int len);
-        abstract int fill(int from, int to, int shift);
+    private interface Sizes {
+        int get(int i);
+        void set(int i, int size);
+        Object unwrap();
+        Sizes copy();
+        Sizes copy(int len);
+        Sizes copyOfRange(int from, int to);
+        Sizes arrayCopy(Sizes src, int srcPos, int len);
+        int fill(int from, int to, int shift);
         
-        void inc(int i, int size) {
+        default void inc(int i, int size) {
             set(i, get(i) + size);
         }
         
@@ -3815,15 +3815,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         // level 3 (shift=12) => 16^4 = 65536 elements, which can just barely fit
         // in a short after subtracting 1.
         
-        static Sizes wrap(Object o) {
-            return switch (o) {
-                case byte[] arr -> new Sizes.OfByte(arr);
-                case char[] arr -> new Sizes.OfShort(arr);
-                case int[] arr -> new Sizes.OfInt(arr);
-                default -> throw new AssertionError();
-            };
-        }
-        
         static Sizes of(int shift, int len) {
             long maxSize = lShift(SPAN, shift);
             if (maxSize <= 256) {
@@ -3835,31 +3826,29 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             return new Sizes.OfInt(new int[len]);
         }
         
-        static class OfByte extends Sizes {
+        class OfByte implements Sizes {
             byte[] sizes;
             OfByte(byte[] sizes) { this.sizes = sizes; }
-            int get(int i) { return Byte.toUnsignedInt(sizes[i])+1; }
-            void set(int i, int size) { sizes[i] = (byte) (size-1); }
-            byte[] unwrap() { return sizes; }
-            OfByte copy() { sizes = sizes.clone(); return this; }
-            OfByte copy(int len) { sizes = Arrays.copyOf(sizes, len); return this; }
+            public int get(int i) { return Byte.toUnsignedInt(sizes[i])+1; }
+            public void set(int i, int size) { sizes[i] = (byte) (size-1); }
+            public byte[] unwrap() { return sizes; }
+            public OfByte copy() { return new OfByte(sizes.clone()); }
+            public OfByte copy(int len) { return new OfByte(Arrays.copyOf(sizes, len)); }
             
-            OfByte copyOfRange(int from, int to) {
+            public OfByte copyOfRange(int from, int to) {
                 if (from == 0) {
-                    sizes = Arrays.copyOf(sizes, to);
+                    return new OfByte(Arrays.copyOf(sizes, to));
                 }
-                else {
-                    int prefixLen = Math.min(sizes.length, to) - from;
-                    int initialSize = sizes[from-1]+1;
-                    sizes = Arrays.copyOfRange(sizes, from, to);
-                    for (int i = 0; i < prefixLen; i++) {
-                        sizes[i] -= initialSize;
-                    }
+                int prefixLen = Math.min(sizes.length, to) - from;
+                int initialSize = sizes[from-1]+1;
+                var newSizes = Arrays.copyOfRange(sizes, from, to);
+                for (int i = 0; i < prefixLen; i++) {
+                    newSizes[i] -= initialSize;
                 }
-                return this;
+                return new OfByte(newSizes);
             }
             
-            OfByte arrayCopy(Sizes src, int srcPos, int len) {
+            public OfByte arrayCopy(Sizes src, int srcPos, int len) {
                 assert srcPos > 0;
                 byte[] other = (byte[]) src.unwrap();
                 int initialSize = other[srcPos-1]+1;
@@ -3870,7 +3859,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 return this;
             }
             
-            int fill(int from, int to, int shift) {
+            public int fill(int from, int to, int shift) {
                 int lastSize = from == 0 ? -1 : sizes[from-1];
                 for (int i = from; i < to; i++) {
                     sizes[i] = (byte) (lastSize += (1 << shift));
@@ -3879,31 +3868,29 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             }
         }
         
-        static class OfShort extends Sizes {
+        class OfShort implements Sizes {
             char[] sizes;
             OfShort(char[] sizes) { this.sizes = sizes; }
-            int get(int i) { return sizes[i]+1; }
-            void set(int i, int size) { sizes[i] = (char) (size-1); }
-            char[] unwrap() { return sizes; }
-            OfShort copy() { sizes = sizes.clone(); return this; }
-            OfShort copy(int len) { sizes = Arrays.copyOf(sizes, len); return this; }
+            public int get(int i) { return sizes[i]+1; }
+            public void set(int i, int size) { sizes[i] = (char) (size-1); }
+            public char[] unwrap() { return sizes; }
+            public OfShort copy() { return new OfShort(sizes.clone()); }
+            public OfShort copy(int len) { return new OfShort(Arrays.copyOf(sizes, len)); }
             
-            OfShort copyOfRange(int from, int to) {
+            public OfShort copyOfRange(int from, int to) {
                 if (from == 0) {
-                    sizes = Arrays.copyOf(sizes, to);
+                    return new OfShort(Arrays.copyOf(sizes, to));
                 }
-                else {
-                    int prefixLen = Math.min(sizes.length, to) - from;
-                    int initialSize = sizes[from-1]+1;
-                    sizes = Arrays.copyOfRange(sizes, from, to);
-                    for (int i = 0; i < prefixLen; i++) {
-                        sizes[i] -= initialSize;
-                    }
+                int prefixLen = Math.min(sizes.length, to) - from;
+                int initialSize = sizes[from-1]+1;
+                var newSizes = Arrays.copyOfRange(sizes, from, to);
+                for (int i = 0; i < prefixLen; i++) {
+                    newSizes[i] -= initialSize;
                 }
-                return this;
+                return new OfShort(newSizes);
             }
             
-            OfShort arrayCopy(Sizes src, int srcPos, int len) {
+            public OfShort arrayCopy(Sizes src, int srcPos, int len) {
                 assert srcPos > 0;
                 char[] other = (char[]) src.unwrap();
                 int initialSize = other[srcPos-1]+1;
@@ -3914,7 +3901,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 return this;
             }
             
-            int fill(int from, int to, int shift) {
+            public int fill(int from, int to, int shift) {
                 int lastSize = from == 0 ? -1 : sizes[from-1];
                 for (int i = from; i < to; i++) {
                     sizes[i] = (char) (lastSize += (1 << shift));
@@ -3923,31 +3910,29 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             }
         }
         
-        static class OfInt extends Sizes {
+        class OfInt implements Sizes {
             int[] sizes;
             OfInt(int[] sizes) { this.sizes = sizes; }
-            int get(int i) { return sizes[i]+1; }
-            void set(int i, int size) { sizes[i] = size-1; }
-            int[] unwrap() { return sizes; }
-            OfInt copy() { sizes = sizes.clone(); return this; }
-            OfInt copy(int len) { sizes = Arrays.copyOf(sizes, len); return this; }
+            public int get(int i) { return sizes[i]+1; }
+            public void set(int i, int size) { sizes[i] = size-1; }
+            public int[] unwrap() { return sizes; }
+            public OfInt copy() { return new OfInt(sizes.clone()); }
+            public OfInt copy(int len) { return new OfInt(Arrays.copyOf(sizes, len)); }
             
-            OfInt copyOfRange(int from, int to) {
+            public OfInt copyOfRange(int from, int to) {
                 if (from == 0) {
-                    sizes = Arrays.copyOf(sizes, to);
+                    return new OfInt(Arrays.copyOf(sizes, to));
                 }
-                else {
-                    int prefixLen = Math.min(sizes.length, to) - from;
-                    int initialSize = sizes[from-1]+1;
-                    sizes = Arrays.copyOfRange(sizes, from, to);
-                    for (int i = 0; i < prefixLen; i++) {
-                        sizes[i] -= initialSize;
-                    }
+                int prefixLen = Math.min(sizes.length, to) - from;
+                int initialSize = sizes[from-1]+1;
+                var newSizes = Arrays.copyOfRange(sizes, from, to);
+                for (int i = 0; i < prefixLen; i++) {
+                    newSizes[i] -= initialSize;
                 }
-                return this;
+                return new OfInt(newSizes);
             }
             
-            OfInt arrayCopy(Sizes src, int srcPos, int len) {
+            public OfInt arrayCopy(Sizes src, int srcPos, int len) {
                 assert srcPos > 0;
                 int[] other = (int[]) src.unwrap();
                 int initialSize = other[srcPos-1]+1;
@@ -3958,7 +3943,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 return this;
             }
             
-            int fill(int from, int to, int shift) {
+            public int fill(int from, int to, int shift) {
                 int lastSize = from == 0 ? -1 : sizes[from-1];
                 for (int i = from; i < to; i++) {
                     sizes[i] = (lastSize += (1 << shift));
