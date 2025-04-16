@@ -1769,7 +1769,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         modCount++;
         
-        int tailOffset = tailOffset(), rangeSize = toIndex - fromIndex, newSize = size -= rangeSize;
+        int tailOffset = tailOffset(), newSize = size -= (toIndex - fromIndex);
         if (toIndex >= tailOffset) {
             if (fromIndex == 0) {
                 // Remove all of root
@@ -1778,44 +1778,30 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 int oldTailSize = tailSize;
                 if (newSize != oldTailSize) {
                     // Remove prefix of tail
-                    tailSize = (byte) newSize;
                     Node newTail = getEditableTail();
                     System.arraycopy(newTail.children, oldTailSize - newSize, newTail.children, 0, newSize);
-                    Arrays.fill(newTail.children, newSize, oldTailSize, null);
+                    Arrays.fill(newTail.children, tailSize = (byte) newSize, oldTailSize, null);
                 }
                 return;
             }
             
-            if (fromIndex >= tailOffset) {
-                // Remove none of root
-                if (newSize == tailOffset) {
-                    // Remove all of tail
-                    pullUpTail();
-                }
-                else {
-                    // Remove range in tail
-                    int oldTailSize = tailSize, tailIdx = toIndex - tailOffset;
-                    int newTailSize = tailSize = (byte) (oldTailSize - rangeSize);
-                    Node newTail = getEditableTail();
-                    System.arraycopy(newTail.children, tailIdx, newTail.children, fromIndex - tailOffset, oldTailSize - tailIdx);
-                    Arrays.fill(newTail.children, newTailSize, oldTailSize, null);
-                }
-            }
-            else {
+            int newTailOffset = tailOffset;
+            if (fromIndex < tailOffset) {
                 // Remove suffix of root
+                newTailOffset = fromIndex;
                 root = forkPrefixRec(fromIndex - 1, this, getEditableRoot(), rootShift, true, true);
-                if (newSize == fromIndex) {
-                    // Remove all of tail
-                    pullUpTail();
-                }
-                else if (toIndex != tailOffset) {
-                    // Remove prefix of tail
-                    int oldTailSize = tailSize, tailIdx = toIndex - tailOffset;
-                    int newTailSize = tailSize = (byte) (oldTailSize - tailIdx);
-                    Node newTail = getEditableTail();
-                    System.arraycopy(newTail.children, tailIdx, newTail.children, 0, newTailSize);
-                    Arrays.fill(newTail.children, newTailSize, oldTailSize, null);
-                }
+            }
+
+            if (newSize == newTailOffset) {
+                // Remove all of tail
+                pullUpTail();
+            }
+            else if (toIndex != tailOffset) {
+                // Remove range in tail
+                int oldTailSize = tailSize;
+                Node newTail = getEditableTail();
+                System.arraycopy(newTail.children, toIndex - tailOffset, newTail.children, fromIndex - newTailOffset, newSize - fromIndex);
+                Arrays.fill(newTail.children, tailSize = (byte) (newSize - newTailOffset), oldTailSize, null);
             }
         }
         else if (fromIndex == 0) {
