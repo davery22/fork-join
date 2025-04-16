@@ -1751,11 +1751,11 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         return true;
     }
     
+    // TODO: In clear(), if tail is owned, fill with null instead of setting to INITIAL_TAIL?
+    
     @Override
     protected void removeRange(int fromIndex, int toIndex) {
         // In-place dual of forkRange()
-        
-        // TODO: Handle non-full leaf root before returning?
         
         if (fromIndex < 0 || fromIndex > toIndex || toIndex > size) {
             throw new IndexOutOfBoundsException(outOfBoundsMsg(fromIndex, toIndex));
@@ -1763,188 +1763,82 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         if (fromIndex == toIndex) {
             return;
         }
-        
-        modCount++;
-        if (fromIndex == 0) {
-            removePrefix(toIndex);
-            return;
-        }
-        if (toIndex == size) {
-            removeSuffix(fromIndex);
-            return;
-        }
-        
-        int tailOffset = tailOffset(), rangeSize = toIndex - fromIndex;
-        size -= rangeSize;
-        if (toIndex >= tailOffset) {
-            if (fromIndex >= tailOffset) {
-                // Starts and ends in the tail
-                Node newTail = getEditableTail();
-                int oldTailSize = tailSize, tailIdx = toIndex - tailOffset;
-                int newTailSize = tailSize = (byte) (oldTailSize - rangeSize);
-                System.arraycopy(newTail.children, tailIdx, newTail.children, fromIndex - tailOffset, oldTailSize - tailIdx);
-                Arrays.fill(newTail.children, newTailSize, oldTailSize, null);
-                return;
-            }
-            
-            // Starts in the root, ends at or in the tail
-            root = forkPrefixRec(fromIndex-1, this, getEditableRoot(), rootShift, true, true);
-            if (toIndex != tailOffset) {
-                Node newTail = getEditableTail();
-                int oldTailSize = tailSize, tailIdx = toIndex - tailOffset;
-                int newTailSize = tailSize = (byte) (oldTailSize - tailIdx);
-                System.arraycopy(newTail.children, tailIdx, newTail.children, 0, newTailSize);
-                Arrays.fill(newTail.children, newTailSize, oldTailSize, null);
-            }
-            return;
-        }
-        
-        // NOTE: We may be leaving some performance on the table, in exchange for sanity.
-        //  We could implement a direct removeRange() that rebalances across the gap on the way up. I tried and ended up
-        //  with three additional variants of rebalance(), along with some new node-copying variants, and plenty of glue
-        //  code. Instead, I'm using the fact that removeRange = join(prefix, suffix), and optimizing to retain
-        //  ownership of the prefix and suffix instead of forking.
-        
-        // Starts and ends in the root
-        Node[] splitRoots = { getEditableRoot(), getEditableRoot() };
-        int[] rootShifts = new int[2];
-        splitRec(fromIndex-1, toIndex, splitRoots, rootShifts, true, true, rootShift);
-        concatSubTree(splitRoots, rootShifts[0], rootShifts[1]);
-        assignRoot(splitRoots[0], splitRoots[1], Math.max(rootShifts[0], rootShifts[1]), size - tailSize);
-    }
-    
-    private void removeSuffix(int fromIndex) {
-        // In-place version of forkPrefix()
-        
-        // Already checked in removeRange() (caller)
-        //if (fromIndex == 0) {
-        //    clear();
-        //    return;
-        //}
-        //if (fromIndex == size) {
-        //    return;
-        //}
-        
-        int tailOffset = tailOffset();
-        size = fromIndex;
-        if (fromIndex >= tailOffset) {
-            if (fromIndex == tailOffset) {
-                pullUpTail();
-                return;
-            }
-            int oldTailSize = tailSize;
-            int newTailSize = tailSize = (byte) (fromIndex - tailOffset);
-            Node newTail = getEditableTail();
-            Arrays.fill(newTail.children, newTailSize, oldTailSize, null);
-            return;
-        }
-        
-        root = forkPrefixRec(fromIndex-1, this, getEditableRoot(), rootShift, true, true);
-        pullUpTail();
-    }
-    
-    private void removePrefix(int toIndex) {
-        // In-place version of forkSuffix()
-        
-        // Already checked in removeRange() (caller)
-        //if (toIndex == 0) {
-        //    return;
-        //}
-        if (toIndex == size) {
+        if (fromIndex == 0 && toIndex == size) {
             clear();
             return;
         }
+        modCount++;
         
-        int newSize = size -= toIndex;
-        if (newSize <= tailSize) {
-            rootShift = 0;
-            root = null;
-            int oldTailSize = tailSize;
-            tailSize = (byte) newSize;
-            Node newTail = getEditableTail();
-            System.arraycopy(newTail.children, oldTailSize - newSize, newTail.children, 0, newSize);
-            Arrays.fill(newTail.children, newSize, oldTailSize, null);
-            return;
-        }
-        
-        root = forkSuffixRec(toIndex, this, getEditableRoot(), rootShift, true, true);
-    }
-    
-    private static void splitRec(int fromIndex, int toIndex, Node[] nodes, int[] rootShifts, boolean isLeftmost, boolean isRightmost, int shift) {
-        int fromChildIdx = (int) (rShiftU(fromIndex, shift) & MASK);
-        int toChildIdx = (int) (rShiftU(toIndex, shift) & MASK);
-        if (shift == 0) {
-            rootShifts[0] = rootShifts[1] = shift;
-            nodes[0] = nodes[0].copy(nodes[0] != nodes[1], fromChildIdx+1);
-            nodes[1] = nodes[1].copySuffix(true, toChildIdx);
-            return;
-        }
-        
-        ParentNode left = (ParentNode) nodes[0], right = (ParentNode) nodes[1];
-        if (left == right) {
-            if (left instanceof SizedParentNode sn) {
-                Sizes oldSizes = sn.sizes();
-                while (oldSizes.get(fromChildIdx) <= fromIndex) {
-                    fromChildIdx++;
+        int tailOffset = tailOffset(), rangeSize = toIndex - fromIndex, newSize = size -= rangeSize;
+        if (toIndex >= tailOffset) {
+            if (fromIndex == 0) {
+                // Remove all of root
+                rootShift = 0;
+                root = null;
+                int oldTailSize = tailSize;
+                if (newSize != oldTailSize) {
+                    // Remove prefix of tail
+                    tailSize = (byte) newSize;
+                    Node newTail = getEditableTail();
+                    System.arraycopy(newTail.children, oldTailSize - newSize, newTail.children, 0, newSize);
+                    Arrays.fill(newTail.children, newSize, oldTailSize, null);
                 }
-                if (fromChildIdx > toChildIdx) {
-                    toChildIdx = fromChildIdx;
+                return;
+            }
+            
+            if (fromIndex >= tailOffset) {
+                // Remove none of root
+                if (newSize == tailOffset) {
+                    // Remove all of tail
+                    pullUpTail();
                 }
-                while (oldSizes.get(toChildIdx) <= toIndex) {
-                    toChildIdx++;
-                }
-                if (fromChildIdx != 0) {
-                    fromIndex -= oldSizes.get(fromChildIdx-1);
-                    toIndex -= oldSizes.get(toChildIdx-1);
-                }
-                else if (toChildIdx != 0) {
-                    toIndex -= oldSizes.get(toChildIdx-1);
+                else {
+                    // Remove range in tail
+                    int oldTailSize = tailSize, tailIdx = toIndex - tailOffset;
+                    int newTailSize = tailSize = (byte) (oldTailSize - rangeSize);
+                    Node newTail = getEditableTail();
+                    System.arraycopy(newTail.children, tailIdx, newTail.children, fromIndex - tailOffset, oldTailSize - tailIdx);
+                    Arrays.fill(newTail.children, newTailSize, oldTailSize, null);
                 }
             }
+            else {
+                // Remove suffix of root
+                root = forkPrefixRec(fromIndex - 1, this, getEditableRoot(), rootShift, true, true);
+                if (newSize == fromIndex) {
+                    // Remove all of tail
+                    pullUpTail();
+                }
+                else if (toIndex != tailOffset) {
+                    // Remove prefix of tail
+                    int oldTailSize = tailSize, tailIdx = toIndex - tailOffset;
+                    int newTailSize = tailSize = (byte) (oldTailSize - tailIdx);
+                    Node newTail = getEditableTail();
+                    System.arraycopy(newTail.children, tailIdx, newTail.children, 0, newTailSize);
+                    Arrays.fill(newTail.children, newTailSize, oldTailSize, null);
+                }
+            }
+        }
+        else if (fromIndex == 0) {
+            // Remove prefix of root
+            root = forkSuffixRec(toIndex, this, getEditableRoot(), rootShift, true, true);
         }
         else {
-            if (left instanceof SizedParentNode sn) {
-                Sizes oldSizes = sn.sizes();
-                while (oldSizes.get(fromChildIdx) <= fromIndex) {
-                    fromChildIdx++;
-                }
-                if (fromChildIdx != 0) {
-                    fromIndex -= oldSizes.get(fromChildIdx-1);
-                }
-            }
-            if (right instanceof SizedParentNode sn) {
-                Sizes oldSizes = sn.sizes();
-                while (oldSizes.get(toChildIdx) <= toIndex) {
-                    toChildIdx++;
-                }
-                if (toChildIdx != 0) {
-                    toIndex -= oldSizes.get(toChildIdx-1);
-                }
-            }
+            // Remove range in root
+            
+            // NOTE: We may be leaving some performance on the table, in exchange for sanity.
+            //  We could implement a direct removeRange() that rebalances across the gap on the way up. I tried and ended up
+            //  with three additional variants of rebalance(), along with some new node-copying variants, and plenty of glue
+            //  code. Instead, I'm using the fact that removeRange = join(prefix, suffix), and optimizing to retain
+            //  ownership of the prefix and suffix instead of forking.
+            
+            int[] rootShifts = new int[2];
+            Node[] splitRoots = { getEditableRoot(), getEditableRoot() };
+            splitRec(fromIndex-1, toIndex, splitRoots, rootShifts, true, true, rootShift);
+            concatSubTree(splitRoots, rootShifts[0], rootShifts[1]);
+            assignRoot(splitRoots[0], splitRoots[1], Math.max(rootShifts[0], rootShifts[1]), size - tailSize);
         }
         
-        int childShift = shift - SHIFT;
-        boolean isChildLeftmost = isLeftmost && fromChildIdx == 0;
-        boolean isChildRightmost = isRightmost && toChildIdx == right.children.length-1;
-        nodes[0] = left.getEditableChild(fromChildIdx);
-        nodes[1] = right.getEditableChild(toChildIdx);
-        splitRec(fromIndex, toIndex, nodes, rootShifts, isChildLeftmost, isChildRightmost, childShift);
-        
-        if (!isChildLeftmost) {
-            rootShifts[0] = shift;
-            // To avoid breaking the suffix copy, we only do the prefix copy in-place if left != right (no aliasing).
-            // Unfortunately, if we need out-of-place, the copy method disowns copied children, because it assumes that
-            // the existing tree is now sharing children with a new tree. But here we are discarding the existing tree.
-            // So we copy-and-restore ownership of children.
-            var oldOwns = left.owns;
-            // TODO: copyPrefix can introduce sizes - due to non-full leaf - that are then obviated by the operation that called split
-            nodes[0] = left = left.copyPrefix(left != right || isChildRightmost, fromChildIdx, nodes[0], shift);
-            left.owns = oldOwns; // Don't worry about the removed suffix - trailing ownership is ignored
-        }
-        if (!isChildRightmost) {
-            rootShifts[1] = shift;
-            nodes[1] = right.copySuffix(true, toChildIdx, nodes[1], isRightmost, shift);
-        }
+        // TODO: Handle non-full leaf root before returning?
     }
     
     private TrieForkJoinList<E> forkRange(int fromIndex, int toIndex) {
@@ -1953,113 +1847,68 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         // Invalidate stack ownership for any existing ListIterators
         forkId = new Object();
         
-        // TODO: Handle non-full leaf root before returning?
-        
         if (fromIndex == toIndex) {
             return new TrieForkJoinList<>();
         }
-        if (fromIndex == 0) {
-            return forkPrefix(toIndex);
-        }
-        if (toIndex == size) {
-            return forkSuffix(fromIndex);
-        }
-        
-        TrieForkJoinList<E> newList = new TrieForkJoinList<>();
-        int newSize = newList.size = toIndex - fromIndex;
-        int tailOffset = tailOffset();
-        if (toIndex >= tailOffset) {
-            if (fromIndex >= tailOffset) {
-                // Starts and ends in the tail
-                newList.claimTail();
-                Object[] newTailChildren = new Object[SPAN];
-                System.arraycopy(tail.children, fromIndex - tailOffset, newTailChildren, 0, newSize);
-                newList.tail = new Node(newTailChildren);
-                newList.tailSize = (byte) newSize;
-                return newList;
-            }
-            
-            newList.root = forkSuffixRec(fromIndex, newList, root, rootShift, true, false);
-            if (toIndex == tailOffset) {
-                // Starts in the root, ends at the tail
-                newList.pullUpTail();
-            }
-            else {
-                // Starts in the root, ends in the tail
-                int newTailSize = newList.tailSize = (byte) (toIndex - tailOffset);
-                newList.claimTail();
-                Object[] newTailChildren = new Object[SPAN];
-                System.arraycopy(tail.children, 0, newTailChildren, 0, newTailSize);
-                newList.tail = new Node(newTailChildren);
-            }
-            return newList;
-        }
-        
-        // Starts and ends in the root
-        newList.root = forkRangeRec(fromIndex, toIndex-1, newList, root, rootShift);
-        newList.pullUpTail();
-        return newList;
-    }
-    
-    private TrieForkJoinList<E> forkPrefix(int toIndex) {
-        // Already checked in forkRange() (caller)
-        //if (toIndex == 0) {
-        //    return new TrieForkJoinList<>();
-        //}
-        if (toIndex == size) {
+        if (fromIndex == 0 && toIndex == size) {
             owns = 0;
             return new TrieForkJoinList<>(this);
         }
         
         TrieForkJoinList<E> newList = new TrieForkJoinList<>();
-        int tailOffset = tailOffset();
-        newList.size = toIndex;
+        int tailOffset = tailOffset(), newSize = newList.size = toIndex - fromIndex;
         if (toIndex >= tailOffset) {
-            disownRoot();
-            newList.rootShift = rootShift;
-            newList.root = root;
-            if (toIndex == tailOffset) {
-                newList.pullUpTail();
+            if (fromIndex >= tailOffset) {
+                // Starts and ends in the tail
+                newList.claimTail();
+                Object[] newTailChildren = new Object[SPAN];
+                System.arraycopy(tail.children, fromIndex - tailOffset, newTailChildren, 0, newList.tailSize = (byte) newSize);
+                newList.tail = new Node(newTailChildren);
                 return newList;
             }
-            int newTailSize = newList.tailSize = (byte) (toIndex - tailOffset);
-            newList.claimTail();
-            Object[] newTailChildren = new Object[SPAN];
-            System.arraycopy(tail.children, 0, newTailChildren, 0, newTailSize);
-            newList.tail = new Node(newTailChildren);
-            return newList;
+            
+            if (fromIndex == 0) {
+                // Starts before the root...
+                disownRoot();
+                newList.rootShift = rootShift;
+                newList.root = root;
+            }
+            else {
+                // Starts in the root...
+                newList.root = forkSuffixRec(fromIndex, newList, root, rootShift, true, false);
+            }
+            
+            if (toIndex == tailOffset) {
+                // ...Ends at the tail
+                newList.pullUpTail();
+            }
+            else if (toIndex == size) {
+                // ...Ends after the tail
+                disownTail();
+                newList.tailSize = tailSize;
+                newList.tail = tail;
+            }
+            else {
+                // ...Ends in the tail
+                newList.claimTail();
+                Object[] newTailChildren = new Object[SPAN];
+                System.arraycopy(tail.children, 0, newTailChildren, 0, newList.tailSize = (byte) (toIndex - tailOffset));
+                newList.tail = new Node(newTailChildren);
+            }
+        }
+        else if (fromIndex == 0) {
+            // Starts and ends in the root
+            newList.root = forkPrefixRec(toIndex - 1, newList, root, rootShift, true, false);
+            newList.pullUpTail();
+        }
+        else {
+            // Starts and ends in the root
+            newList.root = forkRangeRec(fromIndex, toIndex-1, newList, root, rootShift);
+            newList.pullUpTail();
         }
         
-        newList.root = forkPrefixRec(toIndex-1, newList, root, rootShift, true, false);
-        newList.pullUpTail();
-        return newList;
-    }
-    
-    private TrieForkJoinList<E> forkSuffix(int fromIndex) {
-        // Already checked in forkRange() (caller)
-        //if (fromIndex == 0) {
-        //    owns = 0;
-        //    return new TrieForkJoinList<>(this);
-        //}
-        //if (fromIndex == size) {
-        //    return new TrieForkJoinList<>();
-        //}
+        // TODO: Handle non-full leaf root before returning?
         
-        TrieForkJoinList<E> newList = new TrieForkJoinList<>();
-        int newSize = newList.size = size - fromIndex;
-        if (newSize <= tailSize) {
-            newList.tailSize = (byte) newSize;
-            newList.claimTail();
-            Object[] newTailChildren = new Object[SPAN];
-            System.arraycopy(tail.children, tailSize - newSize, newTailChildren, 0, newSize);
-            newList.tail = new Node(newTailChildren);
-            return newList;
-        }
-        
-        disownTail();
-        newList.tailSize = tailSize;
-        newList.tail = tail;
-        newList.root = forkSuffixRec(fromIndex, newList, root, rootShift, true, false);
         return newList;
     }
     
@@ -2143,6 +1992,79 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         Node rightNode = forkPrefixRec(toIndex, newList, (Node) node.children[toChildIdx], childShift, false, false);
         newList.rootShift = (byte) shift;
         return ((ParentNode) node).copyRange(false, fromChildIdx, leftNode, toChildIdx, rightNode, shift);
+    }
+    
+    private static void splitRec(int fromIndex, int toIndex, Node[] nodes, int[] rootShifts, boolean isLeftmost, boolean isRightmost, int shift) {
+        int fromChildIdx = (int) (rShiftU(fromIndex, shift) & MASK);
+        int toChildIdx = (int) (rShiftU(toIndex, shift) & MASK);
+        if (shift == 0) {
+            nodes[0] = nodes[0].copy(nodes[0] != nodes[1], fromChildIdx+1);
+            nodes[1] = nodes[1].copySuffix(true, toChildIdx);
+            rootShifts[0] = rootShifts[1] = shift;
+            return;
+        }
+        
+        ParentNode left = (ParentNode) nodes[0], right = (ParentNode) nodes[1];
+        if (left == right) {
+            if (left instanceof SizedParentNode sn) {
+                Sizes oldSizes = sn.sizes();
+                while (oldSizes.get(fromChildIdx) <= fromIndex) {
+                    fromChildIdx++;
+                }
+                while (oldSizes.get(toChildIdx) <= toIndex) {
+                    toChildIdx++;
+                }
+                if (fromChildIdx != 0) {
+                    fromIndex -= oldSizes.get(fromChildIdx-1);
+                }
+                if (toChildIdx != 0) {
+                    toIndex -= oldSizes.get(toChildIdx-1);
+                }
+            }
+        }
+        else {
+            if (left instanceof SizedParentNode sn) {
+                Sizes oldSizes = sn.sizes();
+                while (oldSizes.get(fromChildIdx) <= fromIndex) {
+                    fromChildIdx++;
+                }
+                if (fromChildIdx != 0) {
+                    fromIndex -= oldSizes.get(fromChildIdx-1);
+                }
+            }
+            if (right instanceof SizedParentNode sn) {
+                Sizes oldSizes = sn.sizes();
+                while (oldSizes.get(toChildIdx) <= toIndex) {
+                    toChildIdx++;
+                }
+                if (toChildIdx != 0) {
+                    toIndex -= oldSizes.get(toChildIdx-1);
+                }
+            }
+        }
+        
+        int childShift = shift - SHIFT;
+        boolean isChildLeftmost = isLeftmost && fromChildIdx == 0;
+        boolean isChildRightmost = isRightmost && toChildIdx == right.children.length-1;
+        nodes[0] = left.getEditableChild(fromChildIdx);
+        nodes[1] = right.getEditableChild(toChildIdx);
+        splitRec(fromIndex, toIndex, nodes, rootShifts, isChildLeftmost, isChildRightmost, childShift);
+        
+        if (!isChildLeftmost) {
+            // To avoid breaking the suffix copy, we only do the prefix copy in-place if left != right (no aliasing).
+            // Unfortunately, if we need out-of-place, the copy method disowns copied children, because it assumes that
+            // the existing tree is now sharing children with a new tree. But here we are discarding the existing tree.
+            // So we copy-and-restore ownership of children.
+            var oldOwns = left.owns;
+            // TODO: copyPrefix can introduce sizes - due to non-full leaf - that are then obviated by the operation that called split
+            nodes[0] = left = left.copyPrefix(left != right || isChildRightmost, fromChildIdx, nodes[0], shift);
+            left.owns = oldOwns; // Don't worry about the removed suffix - trailing ownership is ignored
+            rootShifts[0] = shift;
+        }
+        if (!isChildRightmost) {
+            nodes[1] = right.copySuffix(true, toChildIdx, nodes[1], isRightmost, shift);
+            rootShifts[1] = shift;
+        }
     }
     
     // Pros with a draining join:
