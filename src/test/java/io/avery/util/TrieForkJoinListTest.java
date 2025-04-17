@@ -97,6 +97,7 @@ class TrieForkJoinListTest {
             argumentSet("removeAtIndex3", id(TrieForkJoinListTest::removeAtIndex3)),
             argumentSet("removeAtIndex4", id(TrieForkJoinListTest::removeAtIndex4)),
             argumentSet("removeAtIndex5", id(TrieForkJoinListTest::removeAtIndex5)),
+            argumentSet("removeAtIndex6", id(TrieForkJoinListTest::removeAtIndex6)),
             argumentSet("removeRange1", id(TrieForkJoinListTest::removeRange1)),
             argumentSet("removeRange2", id(TrieForkJoinListTest::removeRange2)),
             argumentSet("removeRange3", id(TrieForkJoinListTest::removeRange3)),
@@ -687,6 +688,18 @@ class TrieForkJoinListTest {
     static Object removeAtIndex5(Factory factory) {
         // Remove only element from list that does not own its node (niche code path)
         return listOfSize(factory, 1).fork().removeLast();
+    }
+    
+    static Object removeAtIndex6(Factory factory) {
+        // Remove prefix such that there is a thin path to a single leaf node on the left,
+        // then remove from the end until we promote that single leaf node to root.
+        int size = SPAN*SPAN*SPAN*SPAN;
+        List<Integer> list = listOfSize(factory, size);
+        list.subList(0, size/2-1).clear();
+        while (list.size() > SPAN+1) {
+            list.removeLast();
+        }
+        return list;
     }
     
     static ForkJoinList<Integer> removeRange1(Factory factory) {

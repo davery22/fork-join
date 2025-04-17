@@ -1270,13 +1270,14 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             size = tailSize = 0;
         }
         else {
-            pullUpTail();
             size--;
+            pullUpTail();
         }
         
         return old;
     }
     
+    // Read size, tailSize
     // Updates tail, tailSize
     // May update root, rootShift
     private void pullUpTail() {
@@ -1329,6 +1330,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 if (!owns) {
                     disownRoot();
                 }
+                preventNonFullLeafRoot();
             }
             else {
                 // len == 1 is impossible, because it would imply that we had a single leaf node under root,
@@ -1748,7 +1750,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         return true;
     }
     
-    // Called at the end of forkRange()/removeRange() to empty or fill a non-full leaf root.
+    // Called at the end of forkRange(), removeRange(), pullUpTail() to empty or fill a non-full leaf root.
     // This is not necessary for correctness, but prevents needing size tables upon subsequent additions.
     private void preventNonFullLeafRoot() {
         if (rootShift == 0 && root != null) {
@@ -1767,7 +1769,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 Node newTail = getEditableTail();
                 Node newRoot = getEditableRoot(SPAN);
                 System.arraycopy(newTail.children, 0, newRoot.children, tailOffset, rootSpace);
-                System.arraycopy(newTail.children, tailOffset, newTail.children, 0, newTailSize);
+                System.arraycopy(newTail.children, rootSpace, newTail.children, 0, newTailSize);
                 Arrays.fill(newTail.children, tailSize = (byte) newTailSize, oldTailSize, null);
             }
         }
