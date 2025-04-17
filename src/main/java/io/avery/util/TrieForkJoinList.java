@@ -1402,9 +1402,14 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         int oldTailSize = tailSize;
         if (deepestNonFullAncestorShift > oldRootShift) {
             // No existing non-full ancestors - need to make a new root above old root
+            
+            // All operations ensure that a leaf root, if present, is always full (see preventNonFullLeafRoot()).
+            // Otherwise we'd have to check for it below.
+            assert oldRootShift > 0 || size - oldTailSize >= SPAN;
+            
             ParentNode newRoot;
             Object[] children = { oldRoot, null };
-            if (oldRoot instanceof SizedParentNode || size - oldTailSize < SPAN) {
+            if (oldRoot instanceof SizedParentNode) {
                 Sizes sizes = Sizes.of(deepestNonFullAncestorShift, 2);
                 sizes.set(0, size - oldTailSize);
                 sizes.set(1, size);
@@ -1482,6 +1487,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     private int directAppend(Object[] src, int offset, AppendMode mode) {
         // If root is null, we should fill up and push down a tail before calling this method.
         assert root != null;
+        assert mode == AppendMode.ALWAYS_EMPTY_SRC || src.length > SPAN;
         
         // Find the deepest non-full node - we will acquire ownership down to that point.
         // Also keep track of remaining space, needed later to pre-compute node lengths, size entries, and tree height.

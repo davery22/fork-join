@@ -532,113 +532,127 @@ class TrieForkJoinListTest {
         return list;
     }
     
-    // TODO: Return both subList and original list, update all elements in both to verify no interference
-    
-    static ForkJoinList<Integer> subListFork1(Factory factory) {
+    static Object subListFork1(Factory factory) {
         // Fork interior subList
         ForkJoinList<Integer> list = listOfSize(factory, 10000);
-        return list.subList(100, 9900).fork();
+        ForkJoinList<Integer> subList = list.subList(100, 9900);
+        return wrapResultForSubListFork(list, subList);
     }
     
-    static ForkJoinList<Integer> subListFork2(Factory factory) {
+    static Object subListFork2(Factory factory) {
         // Fork prefix that ends in the root
         ForkJoinList<Integer> list = listOfSize(factory, 10000);
-        return list.subList(0, 9900).fork();
+        ForkJoinList<Integer> subList = list.subList(0, 9900);
+        return wrapResultForSubListFork(list, subList);
     }
     
-    static ForkJoinList<Integer> subListFork3(Factory factory) {
+    static Object subListFork3(Factory factory) {
         // Fork suffix that starts in the root
         ForkJoinList<Integer> list = listOfSize(factory, 10000);
-        return list.subList(100, list.size()).fork();
+        ForkJoinList<Integer> subList = list.subList(100, list.size());
+        return wrapResultForSubListFork(list, subList);
     }
     
-    static ForkJoinList<Integer> subListFork4(Factory factory) {
+    static Object subListFork4(Factory factory) {
         // Fork empty subList
         ForkJoinList<Integer> list = listOfSize(factory, 10000);
-        return list.subList(100, 100).fork();
+        ForkJoinList<Integer> subList = list.subList(100, 100);
+        return wrapResultForSubListFork(list, subList);
     }
     
-    static ForkJoinList<Integer> subListFork5(Factory factory) {
+    static Object subListFork5(Factory factory) {
         // Fork subList over entire list
         ForkJoinList<Integer> list = listOfSize(factory, 10000);
-        return list.subList(0, list.size()).fork();
+        ForkJoinList<Integer> subList = list.subList(0, list.size());
+        return wrapResultForSubListFork(list, subList);
     }
     
-    static ForkJoinList<Integer> subListFork6(Factory factory) {
+    static Object subListFork6(Factory factory) {
         // Fork prefix that ends in the tail
         int size = SPAN*SPAN;
         ForkJoinList<Integer> list = listOfSize(factory, size);
-        return list.subList(0, size - SPAN/2).fork();
+        ForkJoinList<Integer> subList = list.subList(0, size - SPAN/2);
+        return wrapResultForSubListFork(list, subList);
     }
     
-    static ForkJoinList<Integer> subListFork7(Factory factory) {
+    static Object subListFork7(Factory factory) {
         // Fork prefix that ends at the tail
         int size = SPAN*SPAN;
         ForkJoinList<Integer> list = listOfSize(factory, size);
-        return list.subList(0, size - SPAN).fork();
+        ForkJoinList<Integer> subList = list.subList(0, size - SPAN);
+        return wrapResultForSubListFork(list, subList);
     }
     
-    static ForkJoinList<Integer> subListFork8(Factory factory) {
+    static Object subListFork8(Factory factory) {
         // Fork prefix of relaxed list
         ForkJoinList<Integer> list = factory.get();
         zigZagAdd(list, 1000);
-        return list.subList(0, 867).fork();
+        ForkJoinList<Integer> subList = list.subList(0, 867);
+        return wrapResultForSubListFork(list, subList);
     }
     
-    static ForkJoinList<Integer> subListFork9(Factory factory) {
+    static Object subListFork9(Factory factory) {
         // Fork suffix that starts in the tail
         int size = SPAN*SPAN;
         ForkJoinList<Integer> list = listOfSize(factory, size);
-        return list.subList(size - SPAN/2, size).fork();
+        ForkJoinList<Integer> subList = list.subList(size - SPAN/2, size);
+        return wrapResultForSubListFork(list, subList);
     }
     
-    static ForkJoinList<Integer> subListFork10(Factory factory) {
+    static Object subListFork10(Factory factory) {
         // Fork subList that starts and ends in the tail
         int size = SPAN*SPAN;
         ForkJoinList<Integer> list = listOfSize(factory, size);
-        return list.subList(size - 3*SPAN/4, size - SPAN/4).fork();
+        ForkJoinList<Integer> subList = list.subList(size - 3*SPAN/4, size - SPAN/4);
+        return wrapResultForSubListFork(list, subList);
     }
     
-    static ForkJoinList<Integer> subListFork11(Factory factory) {
+    static Object subListFork11(Factory factory) {
         // Fork subList that starts in the root and ends at the tail
         int size = SPAN*SPAN;
         ForkJoinList<Integer> list = listOfSize(factory, size);
-        return list.subList(size/2, size - SPAN).fork();
+        ForkJoinList<Integer> subList = list.subList(size/2, size - SPAN);
+        return wrapResultForSubListFork(list, subList);
     }
     
-    static ForkJoinList<Integer> subListFork12(Factory factory) {
+    static Object subListFork12(Factory factory) {
         // Fork subList that starts in the root and ends in the tail
         int size = SPAN*SPAN;
         ForkJoinList<Integer> list = listOfSize(factory, size);
-        return list.subList(size/2, size - SPAN/4).fork();
+        ForkJoinList<Integer> subList = list.subList(size/2, size - SPAN/4);
+        return wrapResultForSubListFork(list, subList);
     }
     
-    static ForkJoinList<Integer> subListFork13(Factory factory) {
+    static Object subListFork13(Factory factory) {
         // Fork subList that starts and ends in the same leaf node in the root
         int size = SPAN*SPAN;
         ForkJoinList<Integer> list = listOfSize(factory, size);
-        return list.subList(size/2+2, size/2+4).fork();
+        ForkJoinList<Integer> subList = list.subList(size/2+2, size/2+4);
+        return wrapResultForSubListFork(list, subList);
     }
     
-    static ForkJoinList<Integer> subListFork14(Factory factory) {
+    static Object subListFork14(Factory factory) {
         // Fork subList of a relaxed list that starts and ends in the root
         ForkJoinList<Integer> list = factory.get();
         zigZagAdd(list, 400);
-        return list.subList(250, 500).fork();
+        ForkJoinList<Integer> subList = list.subList(250, 500);
+        return wrapResultForSubListFork(list, subList);
     }
     
-    static ForkJoinList<Integer> subListFork15(Factory factory) {
+    static Object subListFork15(Factory factory) {
         // Fork subList that should leave nothing but a full tail
         int size = SPAN*SPAN*SPAN;
         ForkJoinList<Integer> list = listOfSize(factory, size);
-        return list.subList(size - 5*SPAN/2, size - 3*SPAN/2).fork();
+        ForkJoinList<Integer> subList = list.subList(size - 5*SPAN/2, size - 3*SPAN/2);
+        return wrapResultForSubListFork(list, subList);
     }
     
-    static ForkJoinList<Integer> subListFork16(Factory factory) {
+    static Object subListFork16(Factory factory) {
         // Fork subList that should leave nothing but a full root and partial tail
         int size = SPAN*SPAN*SPAN;
         ForkJoinList<Integer> list = listOfSize(factory, size);
-        return list.subList(size - 5*SPAN/2, size - SPAN).fork();
+        ForkJoinList<Integer> subList = list.subList(size - 5*SPAN/2, size - SPAN);
+        return wrapResultForSubListFork(list, subList);
     }
     
     static List<Integer> removeAtIndex1(Factory factory) {
@@ -1404,6 +1418,15 @@ class TrieForkJoinListTest {
         }
 //        var end = Instant.now();
 //        System.out.println(Duration.between(start, end));
+    }
+    
+    // Sublist fork tests return both original list and subList fork,
+    // after updating all elements in both to verify no interference across the fork
+    static Object wrapResultForSubListFork(ForkJoinList<Integer> list, ForkJoinList<Integer> subList) {
+        subList = subList.fork(); // Updates to original list should not affect this fork, and vice versa
+        list.replaceAll(i -> i+1);
+        subList.replaceAll(i -> i-1);
+        return List.of(list, subList);
     }
     
     static class ArrayForkJoinList<E> extends AbstractList<E> implements ForkJoinList<E> {
