@@ -1169,7 +1169,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         
         // Concat element onto left
 //        splitRoots[1] = new Node(new Object[]{ element });
-//        concatSubTree(splitRoots, rootShifts[0], 0, true);
+//        concatSubTree(splitRoots, rootShifts[0], 0);
         
         // Concat right onto left
         size++;
@@ -1314,20 +1314,27 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         // Second pass
         if (deepestNonEmptyAncestorShift == oldRootShift) {
             int len = oldRoot.children.length;
-            if (len > 2) {
-                getEditableRoot(len-1);
-            }
-            else if (len == 2) {
-                // Replace root with its first child
-                root = (Node) oldRoot.children[0];
-                rootShift -= SHIFT;
-                if (!oldRoot.owns(0)) {
+            if (len == 2) {
+                // Removing second child - Replace root with its first child.
+                // If that child has one child (due to forkRange() or removeRange() leaving a thin path),
+                // then repeat until there is more than one child, or we hit leaf-level.
+                Node newRoot = oldRoot;
+                boolean owns = true;
+                do {
+                    owns = owns && ((ParentNode) newRoot).owns(0);
+                    newRoot = (Node) newRoot.children[0];
+                } while ((oldRootShift -= SHIFT) > 0 && newRoot.children.length == 1);
+                root = newRoot;
+                rootShift = (byte) oldRootShift;
+                if (!owns) {
                     disownRoot();
                 }
             }
-            else { // len == 1
-                root = null;
-                rootShift = 0;
+            else {
+                // len == 1 is impossible, because it would imply that we had a single leaf node under root,
+                // and no operation leaves the tree in that state (the leaf node would be the root, not under it).
+                assert len > 2;
+                getEditableRoot(len-1);
             }
         }
         else {
