@@ -343,13 +343,13 @@ class ReverseOrderForkJoinListView<E> implements ForkJoinList<E> {
     }
     
     public ForkJoinList<E> fork() {
-        return new ReverseOrderForkJoinListView<>(base.fork());
+        return ReverseOrderForkJoinListView.of(base.fork());
     }
     
     public ForkJoinList<E> subList(int fromIndex, int toIndex) {
         int size = base.size();
         Objects.checkFromToIndex(fromIndex, toIndex, size);
-        return new ReverseOrderForkJoinListView<>(base.subList(size - toIndex, size - fromIndex));
+        return ReverseOrderForkJoinListView.of(base.subList(size - toIndex, size - fromIndex));
     }
     
     static <T> Collection<T> toCollectionReversed(Collection<T> collection) {
