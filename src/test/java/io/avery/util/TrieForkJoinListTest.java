@@ -90,6 +90,8 @@ class TrieForkJoinListTest {
             argumentSet("subListFork12", id(TrieForkJoinListTest::subListFork12)),
             argumentSet("subListFork13", id(TrieForkJoinListTest::subListFork13)),
             argumentSet("subListFork14", id(TrieForkJoinListTest::subListFork14)),
+            argumentSet("subListFork15", id(TrieForkJoinListTest::subListFork15)),
+            argumentSet("subListFork16", id(TrieForkJoinListTest::subListFork16)),
             argumentSet("removeAtIndex1", id(TrieForkJoinListTest::removeAtIndex1)),
             argumentSet("removeAtIndex2", id(TrieForkJoinListTest::removeAtIndex2)),
             argumentSet("removeAtIndex3", id(TrieForkJoinListTest::removeAtIndex3)),
@@ -624,6 +626,20 @@ class TrieForkJoinListTest {
         return list.subList(250, 500).fork();
     }
     
+    static ForkJoinList<Integer> subListFork15(Factory factory) {
+        // Fork subList that should leave nothing but a full tail
+        int size = SPAN*SPAN*SPAN;
+        ForkJoinList<Integer> list = listOfSize(factory, size);
+        return list.subList(size - 5*SPAN/2, size - 3*SPAN/2).fork();
+    }
+    
+    static ForkJoinList<Integer> subListFork16(Factory factory) {
+        // Fork subList that should leave nothing but a full root and partial tail
+        int size = SPAN*SPAN*SPAN;
+        ForkJoinList<Integer> list = listOfSize(factory, size);
+        return list.subList(size - 5*SPAN/2, size - SPAN).fork();
+    }
+    
     static List<Integer> removeAtIndex1(Factory factory) {
         // Remove all by popping off the end
         ForkJoinList<Integer> list = listOfSize(factory, 100);
@@ -855,7 +871,7 @@ class TrieForkJoinListTest {
     
     static Object subListToArray2(Factory factory) {
         // Range in deep root
-        return listOfSize(factory, SPAN*1000).subList(100, 1000).toArray();
+        return listOfSize(factory, SPAN*1000).subList(100, 4000).toArray();
     }
     
     static void iterSetForward(ListIterator<Integer> iter, List<Integer> result) {

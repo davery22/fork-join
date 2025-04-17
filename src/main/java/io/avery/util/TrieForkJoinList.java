@@ -67,10 +67,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         return owns == (owns |= 2);
     }
     
-    private void disownTail() {
-        owns &= ~1;
-    }
-    
     private void disownRoot() {
         owns &= ~2;
     }
@@ -1751,7 +1747,30 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         return true;
     }
     
-    // TODO: In clear(), if tail is owned, fill with null instead of setting to INITIAL_TAIL?
+    // Called at the end of forkRange()/removeRange() to empty or fill a non-full leaf root.
+    // This is not necessary for correctness, but prevents needing size tables upon subsequent additions.
+    private void preventNonFullLeafRoot() {
+        if (rootShift == 0 && root != null) {
+            int tailOffset = tailOffset();
+            if (size <= SPAN) {
+                // Root fits in tail - Empty it into tail
+                Node newTail = getEditableTail();
+                System.arraycopy(newTail.children, 0, newTail.children, tailOffset, tailSize);
+                System.arraycopy(root.children, 0, newTail.children, 0, tailOffset);
+                tailSize = (byte) size;
+                root = null;
+            }
+            else if (tailOffset < SPAN) {
+                // Root is not full - Fill it from tail
+                int rootSpace = SPAN - tailOffset, oldTailSize = tailSize, newTailSize = oldTailSize - rootSpace;
+                Node newTail = getEditableTail();
+                Node newRoot = getEditableRoot(SPAN);
+                System.arraycopy(newTail.children, 0, newRoot.children, tailOffset, rootSpace);
+                System.arraycopy(newTail.children, tailOffset, newTail.children, 0, newTailSize);
+                Arrays.fill(newTail.children, tailSize = (byte) newTailSize, oldTailSize, null);
+            }
+        }
+    }
     
     @Override
     protected void removeRange(int fromIndex, int toIndex) {
@@ -1824,7 +1843,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             assignRoot(splitRoots[0], splitRoots[1], Math.max(rootShifts[0], rootShifts[1]), size - tailSize);
         }
         
-        // TODO: Handle non-full leaf root before returning?
+        preventNonFullLeafRoot();
     }
     
     private TrieForkJoinList<E> forkRange(int fromIndex, int toIndex) {
@@ -1868,12 +1887,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 // ...Ends at the tail
                 newList.pullUpTail();
             }
-            else if (toIndex == size) {
-                // ...Ends after the tail
-                disownTail();
-                newList.tailSize = tailSize;
-                newList.tail = tail;
-            }
             else {
                 // ...Ends in the tail
                 newList.claimTail();
@@ -1893,8 +1906,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             newList.pullUpTail();
         }
         
-        // TODO: Handle non-full leaf root before returning?
-        
+        newList.preventNonFullLeafRoot();
         return newList;
     }
     
@@ -3742,6 +3754,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             return new Sizes.OfInt(new int[len]);
         }
         
+        // Only used if SHIFT <= 4 (SPAN <= 16)
         static class OfByte extends Sizes {
             byte[] sizes;
             OfByte(byte[] sizes) { this.sizes = sizes; }
