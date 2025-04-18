@@ -26,7 +26,19 @@ public class Main {
     //  - Seemingly not in join(), assuming both sides start with a full rightmost leaf
     
     public static void main(String[] args) {
-        joinBench2();
+        zigZagAddBench();
+    }
+    
+    static void zigZagAddBench() {
+        int size = 1000;
+        int sum = 0;
+        for (int i = 0; i < 100_000; i++) {
+//            List<Integer> list = new ArrayList<>(); ~24 sec
+            List<Integer> list = new TrieForkJoinList<>(); // ~180 sec
+            zigZagAdd(list, size);
+            sum += list.size();
+        }
+        System.out.println(sum);
     }
     
     static void joinBench2() {
@@ -168,5 +180,25 @@ public class Main {
             if (i % 1000000 == 0) System.out.println(i);
         }
         System.out.println(sum);
+    }
+    
+    static void zigZagAdd(List<Integer> list, int initialLinearSpan) {
+        ListIterator<Integer> iter = list.listIterator();
+        int i;
+        for (i = 0; i < initialLinearSpan; i++) {
+            iter.add(i);
+        }
+        for (;;) {
+            if (!iter.hasPrevious()) { break; }
+            iter.previous();
+            iter.add(i++);
+            if (!iter.hasPrevious()) { break; }
+            iter.previous();
+        }
+        for (;;) {
+            if (!iter.hasNext()) { break; }
+            iter.next();
+            iter.add(i++);
+        }
     }
 }

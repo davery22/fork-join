@@ -1194,8 +1194,6 @@ class TrieForkJoinListTest {
     }
     
     static Object subListSet1(Factory factory) {
-        // TODO: For list size 100, subList [20,80),
-        //  it looked like the last subList node could have been shared but wasn't
         ForkJoinList<Integer> list = listOfSize(factory, 1000);
         ForkJoinList<Integer> subList = list.subList(200, 800);
         subList.fork(); // Share ownership of nodes, forcing set() to path-copy (which is a structural modification)

@@ -90,7 +90,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     }
     
     private Node getEditableTail() {
-        return tail = tail.copy(claimTail(), SPAN);
+        return tail = tail.copyPrefix(claimTail(), SPAN);
     }
     
     private Node getEditableRoot() {
@@ -98,7 +98,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     }
     
     private Node getEditableRoot(int len) {
-        return root = root.copy(claimRoot(), len);
+        return root = root.copyPrefix(claimRoot(), len);
     }
     
     public TrieForkJoinList() {
@@ -1922,7 +1922,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         int childIdx = (int) (rShiftU(toIndex, shift) & MASK);
         if (shift == 0) {
             newList.rootShift = (byte) shift;
-            return node.copy(isOwned, childIdx+1);
+            return node.copyPrefix(isOwned, childIdx+1);
         }
         if (node instanceof SizedParentNode sn) {
             Sizes oldSizes = sn.sizes();
@@ -1973,7 +1973,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         int toChildIdx = (int) (rShiftU(toIndex, shift) & MASK);
         if (shift == 0) {
             newList.rootShift = (byte) shift;
-            return node.copyRange(false, fromChildIdx, toChildIdx+1);
+            return node.copyRange(fromChildIdx, toChildIdx+1);
         }
         if (node instanceof SizedParentNode sn) {
             Sizes oldSizes = sn.sizes();
@@ -1997,14 +1997,14 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         Node leftNode = forkSuffixRec(fromIndex, newList, (Node) node.children[fromChildIdx], childShift, false, false);
         Node rightNode = forkPrefixRec(toIndex, newList, (Node) node.children[toChildIdx], childShift, false, false);
         newList.rootShift = (byte) shift;
-        return ((ParentNode) node).copyRange(false, fromChildIdx, leftNode, toChildIdx, rightNode, shift);
+        return ((ParentNode) node).copyRange(fromChildIdx, leftNode, toChildIdx, rightNode, shift);
     }
     
     private static void splitRec(int fromIndex, int toIndex, Node[] nodes, int[] rootShifts, boolean isLeftmost, boolean isRightmost, int shift) {
         int fromChildIdx = (int) (rShiftU(fromIndex, shift) & MASK);
         int toChildIdx = (int) (rShiftU(toIndex, shift) & MASK);
         if (shift == 0) {
-            nodes[0] = nodes[0].copy(nodes[0] != nodes[1], fromChildIdx+1);
+            nodes[0] = nodes[0].copyPrefix(nodes[0] != nodes[1], fromChildIdx+1);
             nodes[1] = nodes[1].copySuffix(true, toChildIdx);
             rootShifts[0] = rootShifts[1] = shift;
             return;
@@ -2188,7 +2188,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     // Called before pushing down a possibly non-full tail during join
     private void trimTailToSize() {
         if (tail.children.length != tailSize) {
-            tail = tail.copy(claimTail(), tailSize);
+            tail = tail.copyPrefix(claimTail(), tailSize);
         }
     }
     
@@ -2620,7 +2620,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 size -= leftSuffixSize;
                 boolean ownsTail = claimTail();
                 if (tailIdx != 0) {
-                    tail = tail.copy(ownsTail, tailSize = (byte) tailIdx);
+                    tail = tail.copyPrefix(ownsTail, tailSize = (byte) tailIdx);
                     pushDownTail();
                 }
                 tail = new Node(newTailChildren);
@@ -2634,7 +2634,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 size -= leftSuffixSize;
                 boolean ownsTail = claimTail();
                 if (tailIdx != 0) {
-                    tail = tail.copy(ownsTail, tailSize = (byte) tailIdx);
+                    tail = tail.copyPrefix(ownsTail, tailSize = (byte) tailIdx);
                     pushDownTail();
                 }
                 tail = right.tail;
@@ -3027,9 +3027,9 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             return isOwned ? this : new Node(children.clone());
         }
         
-        Node copy(boolean isOwned, int len) {
-            if (children.length != len) {
-                Object[] newChildren = Arrays.copyOf(children, len);
+        Node copyPrefix(boolean isOwned, int to) {
+            if (children.length != to) {
+                Object[] newChildren = Arrays.copyOf(children, to);
                 if (isOwned) {
                     children = newChildren;
                     return this;
@@ -3051,20 +3051,16 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             return copy(isOwned);
         }
         
-        Node copyRange(boolean isOwned, int from, int to) {
+        Node copyRange(int from, int to) {
             if (from != 0 || to != children.length) {
                 Object[] newChildren = Arrays.copyOfRange(children, from, to);
-                if (isOwned) {
-                    children = newChildren;
-                    return this;
-                }
                 return new Node(newChildren);
             }
-            return copy(isOwned);
+            return copy(false);
         }
         
-        Node copy(boolean isOwned, int skip, int keep, int take, Node from,
-                  boolean isFromOwned, boolean isRightmost, int shift) {
+        Node copyShift(boolean isOwned, int skip, int keep, int take, Node from,
+                       boolean isFromOwned, boolean isRightmost, int shift) {
             assert take > 0;
             int newLen = keep + take;
             
@@ -3169,27 +3165,26 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         
         @Override
-        ParentNode copy(boolean isOwned, int len) {
+        ParentNode copyPrefix(boolean isOwned, int to) {
             int oldLen = children.length;
-            if (len != oldLen) {
-                Object[] newChildren = Arrays.copyOf(children, len);
+            if (to != oldLen) {
+                Object[] newChildren = Arrays.copyOf(children, to);
                 if (isOwned) {
                     children = newChildren;
                     owns |= ~mask(oldLen); // Take ownership of new slots if len > oldLen (trailing ownership is ignored)
                     return this;
                 }
-                return new ParentNode((short) ~mask(oldLen), newChildren);
+                return new ParentNode(~mask(oldLen), newChildren);
             }
             return copy(isOwned);
         }
         
         @Override
         ParentNode copySuffix(boolean isOwned, int from) {
-            // TODO: Integrate into full method
             if (from != 0) {
                 Object[] newChildren = Arrays.copyOfRange(children, from, children.length);
                 if (isOwned) {
-                    owns >>>= from;
+                    owns >>>= from; // Shift off prefix
                     children = newChildren;
                     return this;
                 }
@@ -3199,51 +3194,56 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         
         @Override
-        ParentNode copyRange(boolean isOwned, int from, int to) {
-            // TODO: Integrate into full method
+        ParentNode copyRange(int from, int to) {
             if (from != 0 || to != children.length) {
                 Object[] newChildren = Arrays.copyOfRange(children, from, to);
-                if (isOwned) {
-                    owns >>>= from; // shift off prefix; suffix bits are simply ignored
-                    children = newChildren;
-                    return this;
-                }
                 return new ParentNode(newChildren);
             }
-            return copy(isOwned);
+            return copy(false);
         }
         
+        // copyPrefix/copySuffix are used by forkPrefixRec/forkSuffixRec (respectively) and splitRec
         ParentNode copyPrefix(boolean isOwned, int toIndex, Node newLastChild, int shift) {
-            disownPrefix(toIndex); // TODO: avoid if isOwned
-            ParentNode newNode = copy(isOwned, toIndex+1);
+            if (!isOwned) {
+                // Disown the children that we will be sharing.
+                // This mutates the current node, which is fine - either we own it, or no one does.
+                disownPrefix(toIndex);
+            }
+            ParentNode newNode = copyPrefix(isOwned, toIndex+1);
             newNode.claim(toIndex);
             newNode.children[toIndex] = newLastChild;
-            // TODO: Not always rightmost - when called by splitRec, we (may) want to retain sizes for later concat...
-            return newNode.refreshSizesIfRightmostChildChanged(true, shift); // TODO: Skip straight to Sized if needed (skip intermediate copy)
+            return newNode.refreshSizesIfRightmostChildChanged(true, shift);
         }
         
         ParentNode copySuffix(boolean isOwned, int fromIndex, Node newFirstChild, boolean isRightmost, int shift) {
-            disownSuffix(fromIndex+1); // TODO: avoid if isOwned
+            if (!isOwned) {
+                // Disown the children that we will be sharing.
+                // This mutates the current node, which is fine - either we own it, or no one does.
+                disownSuffix(fromIndex+1);
+            }
             ParentNode newNode = copySuffix(isOwned, fromIndex);
             newNode.claim(0);
             newNode.children[0] = newFirstChild;
-            return newNode.refreshSizesIfLeftmostChildChanged(isRightmost, shift); // TODO: Skip straight to Sized if needed (skip intermediate copy)
+            return newNode.refreshSizesIfLeftmostChildChanged(isRightmost, shift);
         }
         
-        ParentNode copyRange(boolean isOwned, int fromIndex, Node newFirstChild, int toIndex, Node newLastChild, int shift) {
+        // copyRange is used by forkRangeRec
+        ParentNode copyRange(int fromIndex, Node newFirstChild, int toIndex, Node newLastChild, int shift) {
             int lastIdx = toIndex-fromIndex;
-            disownRange(fromIndex+1, toIndex); // TODO: avoid if isOwned
-            ParentNode newNode = copyRange(isOwned, fromIndex, toIndex+1);
+            // Disown the children that we will be sharing.
+            // This mutates the current node, which is fine - either we own it, or no one does.
+            disownRange(fromIndex+1, toIndex);
+            ParentNode newNode = copyRange(fromIndex, toIndex+1);
             newNode.claim(0);
             newNode.claim(lastIdx);
             newNode.children[0] = newFirstChild;
             newNode.children[lastIdx] = newLastChild;
-            return newNode.refreshSizes(true, shift); // TODO: Skip straight to Sized if needed (skip intermediate copy)
+            return newNode.refreshSizes(true, shift);
         }
         
         @Override
-        ParentNode copy(boolean isOwned, int skip, int keep, int take, Node from,
-                        boolean isFromOwned, boolean isRightmost, int shift) {
+        ParentNode copyShift(boolean isOwned, int skip, int keep, int take, Node from,
+                             boolean isFromOwned, boolean isRightmost, int shift) {
             assert take > 0;
             int newLen = keep + take;
             
@@ -3426,8 +3426,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             return this;
         }
         
-        // TODO: Methods for 'decrementAndGetChild(i)' 'incrementAndGetChild(i, addedSize)' would probably be handy
-        
         @Override
         Node getEditableChild(int i) {
             Node tmp = ((Node) children[i]).copy(claim(i));
@@ -3437,7 +3435,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         
         @Override
         Node getEditableChild(int i, int len) {
-            Node tmp = ((Node) children[i]).copy(claim(i), len);
+            Node tmp = ((Node) children[i]).copyPrefix(claim(i), len);
             children[i] = tmp;
             return tmp;
         }
@@ -3445,7 +3443,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         // Special-purpose method used during rebalance
         void editChild(int i, int skip, int keep, int take, Node from,
                        boolean isFromOwned, boolean isRightmost, int shift) {
-            children[i] = ((Node) children[i]).copy(claim(i), skip, keep, take, from, isFromOwned, isRightmost, shift);
+            children[i] = ((Node) children[i]).copyShift(claim(i), skip, keep, take, from, isFromOwned, isRightmost, shift);
         }
     }
     
@@ -3477,33 +3475,32 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         
         @Override
-        SizedParentNode copy(boolean isOwned, int len) {
-            // TODO: If truncating (len < curLen), could become not-Sized
+        SizedParentNode copyPrefix(boolean isOwned, int to) {
+            // TODO: Allow to become not-Sized? (if truncating; to < oldLen)
             int oldLen = children.length;
-            if (len != oldLen) {
-                Object[] newChildren = Arrays.copyOf(children, len);
-                Sizes newSizes = sizes().copy(len);
+            if (to != oldLen) {
+                Object[] newChildren = Arrays.copyOf(children, to);
+                Sizes newSizes = sizes().copyRange(0, to);
                 if (isOwned) {
                     children = newChildren;
                     owns |= ~mask(oldLen); // Take ownership of new slots if len > oldLen (trailing ownership is ignored)
                     sizes = newSizes.unwrap();
                     return this;
                 }
-                return new SizedParentNode((short) ~mask(oldLen), newChildren, newSizes);
+                return new SizedParentNode(~mask(oldLen), newChildren, newSizes);
             }
             return copy(isOwned);
         }
         
         @Override
         ParentNode copySuffix(boolean isOwned, int from) {
-            // TODO: Integrate into full method
-            // TODO: could become not-Sized
+            // TODO: Allow to become not-Sized?
             if (from != 0) {
                 int len = children.length;
                 Object[] newChildren = Arrays.copyOfRange(children, from, len);
-                Sizes newSizes = sizes().copyOfRange(from, len);
+                Sizes newSizes = sizes().copyRange(from, len);
                 if (isOwned) {
-                    owns >>>= from;
+                    owns >>>= from; // Shift off prefix
                     children = newChildren;
                     sizes = newSizes.unwrap();
                     return this;
@@ -3514,56 +3511,19 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         
         @Override
-        ParentNode copyRange(boolean isOwned, int from, int to) {
-            // TODO: Integrate into full method
-            // TODO: could become not-Sized
+        ParentNode copyRange(int from, int to) {
+            // TODO: Allow to become not-Sized?
             if (from != 0 || to != children.length) {
                 Object[] newChildren = Arrays.copyOfRange(children, from, to);
-                Sizes newSizes = sizes().copyOfRange(from, to);
-                if (isOwned) {
-                    owns >>>= from; // shift off prefix; suffix bits are simply ignored
-                    children = newChildren;
-                    sizes = newSizes.unwrap();
-                    return this;
-                }
+                Sizes newSizes = sizes().copyRange(from, to);
                 return new SizedParentNode(newChildren, newSizes);
             }
-            return copy(isOwned);
+            return copy(false);
         }
         
         @Override
-        ParentNode copyPrefix(boolean isOwned, int toIndex, Node newLastChild, int shift) {
-            disownPrefix(toIndex); // TODO: avoid if isOwned
-            ParentNode newNode = copy(isOwned, toIndex+1); // TODO: Truncating-copy could make us not-Sized
-            newNode.claim(toIndex);
-            newNode.children[toIndex] = newLastChild;
-            return newNode.refreshSizesIfRightmostChildChanged(true, shift); // TODO: Could become Sized or not-Sized
-        }
-        
-        @Override
-        ParentNode copySuffix(boolean isOwned, int fromIndex, Node newFirstChild, boolean isRightmost, int shift) {
-            disownSuffix(fromIndex+1); // TODO: avoid if isOwned
-            ParentNode newNode = copySuffix(isOwned, fromIndex); // TODO: Truncating-copy could make us not-Sized
-            newNode.claim(0);
-            newNode.children[0] = newFirstChild;
-            return newNode.refreshSizesIfLeftmostChildChanged(isRightmost, shift); // TODO: Could become Sized or not-Sized
-        }
-        
-        @Override
-        ParentNode copyRange(boolean isOwned, int fromIndex, Node newFirstChild, int toIndex, Node newLastChild, int shift) {
-            int lastIdx = toIndex-fromIndex;
-            disownRange(fromIndex+1, toIndex); // TODO: avoid if isOwned (currently, isOwned = false always)
-            ParentNode newNode = copyRange(isOwned, fromIndex, toIndex+1); // TODO: Truncating-copy could make us not-Sized
-            newNode.claim(0);
-            newNode.claim(lastIdx);
-            newNode.children[0] = newFirstChild;
-            newNode.children[lastIdx] = newLastChild;
-            return newNode.refreshSizes(true, shift); // TODO: Could become Sized or not-Sized
-        }
-        
-        @Override
-        ParentNode copy(boolean isOwned, int skip, int keep, int take, Node from,
-                        boolean isFromOwned, boolean isRightmost, int shift) {
+        ParentNode copyShift(boolean isOwned, int skip, int keep, int take, Node from,
+                             boolean isFromOwned, boolean isRightmost, int shift) {
             assert take > 0;
             
             int oldLen = skip + keep;
@@ -3574,7 +3534,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             int lastSize = oldSizes.get(oldLen-1);
             Sizes newSizes = (skip == 0 ? lastSize : (lastSize -= oldSizes.get(skip-1))) != lShift(keep, shift)
                 ? skip != take
-                    ? oldSizes.copyOfRange(skip, skip + newLen)
+                    ? oldSizes.copyRange(skip, skip + newLen)
                     : (isOwned ? oldSizes : Sizes.of(shift, newLen)).arrayCopy(oldSizes, skip, keep)
                 : null;
             
@@ -3721,8 +3681,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         abstract void set(int i, int size);
         abstract Object unwrap();
         abstract Sizes copy();
-        abstract Sizes copy(int len);
-        abstract Sizes copyOfRange(int from, int to);
+        abstract Sizes copyRange(int from, int to);
         abstract Sizes arrayCopy(Sizes src, int srcPos, int len);
         abstract int fill(int from, int to, int shift);
         
@@ -3769,9 +3728,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             void set(int i, int size) { sizes[i] = (byte) (size-1); }
             byte[] unwrap() { return sizes; }
             OfByte copy() { sizes = sizes.clone(); return this; }
-            OfByte copy(int len) { sizes = Arrays.copyOf(sizes, len); return this; }
             
-            OfByte copyOfRange(int from, int to) {
+            OfByte copyRange(int from, int to) {
                 if (from == 0) {
                     sizes = Arrays.copyOf(sizes, to);
                 }
@@ -3813,9 +3771,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             void set(int i, int size) { sizes[i] = (char) (size-1); }
             char[] unwrap() { return sizes; }
             OfShort copy() { sizes = sizes.clone(); return this; }
-            OfShort copy(int len) { sizes = Arrays.copyOf(sizes, len); return this; }
             
-            OfShort copyOfRange(int from, int to) {
+            OfShort copyRange(int from, int to) {
                 if (from == 0) {
                     sizes = Arrays.copyOf(sizes, to);
                 }
@@ -3857,9 +3814,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             void set(int i, int size) { sizes[i] = size-1; }
             int[] unwrap() { return sizes; }
             OfInt copy() { sizes = sizes.clone(); return this; }
-            OfInt copy(int len) { sizes = Arrays.copyOf(sizes, len); return this; }
             
-            OfInt copyOfRange(int from, int to) {
+            OfInt copyRange(int from, int to) {
                 if (from == 0) {
                     sizes = Arrays.copyOf(sizes, to);
                 }
