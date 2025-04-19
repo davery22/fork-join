@@ -1395,9 +1395,6 @@ class TrieForkJoinListTest {
     
     static void zigZagAdd(List<Integer> list, int initialLinearSpan) {
         ListIterator<Integer> iter = list.listIterator();
-        // TODO: ArrayList is >20x faster. Optimize add(i,e)
-        //  LinkedList is obviously best for iterator-insertion, but that requires a tailored implementation.
-//        var start = Instant.now();
         int i;
         for (i = 0; i < initialLinearSpan; i++) {
             iter.add(i);
@@ -1414,8 +1411,6 @@ class TrieForkJoinListTest {
             iter.next();
             iter.add(i++);
         }
-//        var end = Instant.now();
-//        System.out.println(Duration.between(start, end));
     }
     
     // Sublist fork tests return both original list and subList fork,

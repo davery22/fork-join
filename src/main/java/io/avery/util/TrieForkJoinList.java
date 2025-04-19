@@ -285,7 +285,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             deepestOwned = Byte.MAX_VALUE;
         }
         
-        Node nextLeaf() {
+        void nextLeaf() {
             assert leafOffset == leafNode.children.length;
             assert cursor < tailOffset();
             
@@ -308,7 +308,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             }
             deepestOwned = (owned && ((ParentNode) parent.node).owns(parent.offset)) ? (byte) (newDeepestOwned-1) : newDeepestOwned;
             leafOffset = 0;
-            return leafNode = (Node) parent.node.children[parent.offset];
+            leafNode = (Node) parent.node.children[parent.offset];
         }
         
         Node prevLeaf() {
@@ -375,7 +375,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                     leafNode = tail;
                 }
                 else {
-                    leafNode = nextLeaf();
+                    nextLeaf();
                 }
             }
             lastRet = i;
@@ -545,26 +545,30 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             else if (stack == null) { // implies rootShift == 0
                 leafNode = getEditableRoot();
             }
-            else stackCopying: {
-                int j;
-                if (expectedForkId != forkId || (j = deepestOwned) == Byte.MAX_VALUE) {
-                    // Either deepestOwned is unset (if this is our first time calling set(), or
-                    // add()/remove()/forEachRemaining() invalidated it), or we can't trust it because
-                    // part or all of the list was forked.
-                    expectedForkId = forkId;
-                    stack[j = stack.length-1].node = getEditableRoot();
-                }
-                else if (j == -1) {
-                    break stackCopying;
-                }
-                for (; j > 0; j--) {
-                    stack[j-1].node = stack[j].node.getEditableChild(stack[j].offset);
-                }
-                leafNode = stack[0].node.getEditableChild(stack[0].offset);
-                deepestOwned = -1;
+            else {
+                ensureStackIsOwned();
             }
             leafNode.children[leafOffset + adj] = e;
             return oldLeafNode != leafNode;
+        }
+        
+        private void ensureStackIsOwned() {
+            int i;
+            if (expectedForkId != forkId || (i = deepestOwned) == Byte.MAX_VALUE) {
+                // Either deepestOwned is unset (if this is our first time calling set(), or
+                // add()/remove()/forEachRemaining() invalidated it), or we can't trust it because
+                // part or all of the list was forked.
+                expectedForkId = forkId;
+                stack[i = stack.length-1].node = getEditableRoot();
+            }
+            else if (i == -1) {
+                return;
+            }
+            for (; i > 0; i--) {
+                stack[i-1].node = stack[i].node.getEditableChild(stack[i].offset);
+            }
+            leafNode = stack[0].node.getEditableChild(stack[0].offset);
+            deepestOwned = -1;
         }
         
         @Override
@@ -573,11 +577,36 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             
             try {
                 int i = cursor;
-                TrieForkJoinList.this.add(i, e);
-                cursor = i + 1;
+                if (leafOffset == SPAN && i < tailOffset()) {
+                    nextLeaf();
+                }
+                Node leaf = leafNode;
+                int leafLen = leaf.children.length;
+                if (leafLen == SPAN || leaf == tail) {
+                    // leafLen == SPAN also covers the leaf root case, because a leaf root is always full
+                    TrieForkJoinList.this.add(i, e);
+                    init(cursor = i + 1); // Possibly refresh stack
+                }
+                else {
+                    // Optimistic insert: There is space in the current leaf, and inserting
+                    // an element would not decrease ancestors' balance, so just do it.
+                    // TODO: This does not check if ancestors can now become not-Sized
+                    checkNewSize(size, 1);
+                    modCount++;
+                    size++;
+                    ensureStackIsOwned();
+                    for (Frame frame : stack) {
+                        // Leaf was not full so ancestors must be Sized - add 1 to subsequent sizes
+                        ((SizedParentNode) frame.node).sizes().cumulate1(frame.offset);
+                    }
+                    int offset = leafOffset;
+                    leafNode = leaf = stack[0].node.getEditableChild(stack[0].offset, leafLen+1);
+                    System.arraycopy(leaf.children, offset, leaf.children, offset+1, leafLen-offset);
+                    leaf.children[leafOffset++] = e;
+                    cursor = i + 1;
+                }
                 lastRet = -1;
                 expectedModCount = modCount;
-                init(cursor); // Possibly refresh stack
             } catch (IndexOutOfBoundsException ex) {
                 throw new ConcurrentModificationException();
             }
@@ -592,10 +621,9 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             
             try {
                 TrieForkJoinList.this.remove(lastRet);
-                cursor = lastRet;
+                init(cursor = lastRet); // Possibly refresh stack
                 lastRet = -1;
                 expectedModCount = modCount;
-                init(cursor); // Possibly refresh stack
             } catch (IndexOutOfBoundsException ex) {
                 throw new ConcurrentModificationException();
             }
@@ -1487,7 +1515,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     private int directAppend(Object[] src, int offset, AppendMode mode) {
         // If root is null, we should fill up and push down a tail before calling this method.
         assert root != null;
-        assert mode == AppendMode.ALWAYS_EMPTY_SRC || src.length > SPAN;
+        assert mode == AppendMode.ALWAYS_EMPTY_SRC || src.length - offset > SPAN;
         
         // Find the deepest non-full node - we will acquire ownership down to that point.
         // Also keep track of remaining space, needed later to pre-compute node lengths, size entries, and tree height.
@@ -3684,6 +3712,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         abstract Sizes copyRange(int from, int to);
         abstract Sizes arrayCopy(Sizes src, int srcPos, int len);
         abstract int fill(int from, int to, int shift);
+        abstract void cumulate1(int from);
         
         void inc(int i, int size) {
             set(i, get(i) + size);
@@ -3762,6 +3791,12 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 }
                 return lastSize + 1;
             }
+            
+            void cumulate1(int from) {
+                for (int i = from; i < sizes.length; i++) {
+                    sizes[i]++;
+                }
+            }
         }
         
         static class OfShort extends Sizes {
@@ -3805,6 +3840,12 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 }
                 return lastSize + 1;
             }
+            
+            void cumulate1(int from) {
+                for (int i = from; i < sizes.length; i++) {
+                    sizes[i]++;
+                }
+            }
         }
         
         static class OfInt extends Sizes {
@@ -3847,6 +3888,12 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                     sizes[i] = (lastSize += (1 << shift));
                 }
                 return lastSize + 1;
+            }
+            
+            void cumulate1(int from) {
+                for (int i = from; i < sizes.length; i++) {
+                    sizes[i]++;
+                }
             }
         }
     }
