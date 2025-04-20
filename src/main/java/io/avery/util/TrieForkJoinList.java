@@ -597,7 +597,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                     ensureStackIsOwned();
                     for (Frame frame : stack) {
                         // Leaf was not full so ancestors must be Sized - add 1 to subsequent sizes
-                        ((SizedParentNode) frame.node).sizes().cumulate1(frame.offset);
+                        ((SizedParentNode) frame.node).sizes().cumulate(frame.offset, 1);
                     }
                     int offset = leafOffset;
                     leafNode = leaf = stack[0].node.getEditableChild(stack[0].offset, leafLen+1);
@@ -607,7 +607,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 }
                 lastRet = -1;
                 expectedModCount = modCount;
-            } catch (IndexOutOfBoundsException ex) {
+            }
+            catch (IndexOutOfBoundsException ex) {
                 throw new ConcurrentModificationException();
             }
         }
@@ -624,7 +625,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 init(cursor = lastRet); // Possibly refresh stack
                 lastRet = -1;
                 expectedModCount = modCount;
-            } catch (IndexOutOfBoundsException ex) {
+            }
+            catch (IndexOutOfBoundsException ex) {
                 throw new ConcurrentModificationException();
             }
         }
@@ -2028,7 +2030,99 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         return ((ParentNode) node).copyRange(fromChildIdx, leftNode, toChildIdx, rightNode, shift);
     }
     
+    record SplitResult(Node leftRoot, Node rightRoot, int leftRootShift, int rightRootShift) {}
+    
+//    private static SplitResult splitAroundRange(int fromIndex, int toIndex, Node root, int shift) {
     private static void splitRec(int fromIndex, int toIndex, Node[] nodes, int[] rootShifts, boolean isLeftmost, boolean isRightmost, int shift) {
+        record State(ParentNode left, ParentNode right, boolean isLeftmost, boolean isRightmost, int fromChildIdx, int toChildIdx) {}
+        
+        State[] stack = new State[shift / SHIFT];
+//        Node left = root, right = root;
+//        boolean isLeftmost = true, isRightmost = true;
+        Node left = nodes[0], right = nodes[1];
+        int fromChildIdx = (int) (rShiftU(fromIndex, shift) & MASK);
+        int toChildIdx = (int) (rShiftU(toIndex, shift) & MASK);
+        int i = stack.length-1;
+        
+        while (shift > 0) {
+            if (left == right) {
+                if (left instanceof SizedParentNode sn) {
+                    Sizes oldSizes = sn.sizes();
+                    while (oldSizes.get(fromChildIdx) <= fromIndex) {
+                        fromChildIdx++;
+                    }
+                    while (oldSizes.get(toChildIdx) <= toIndex) {
+                        toChildIdx++;
+                    }
+                    if (fromChildIdx != 0) {
+                        fromIndex -= oldSizes.get(fromChildIdx-1);
+                    }
+                    if (toChildIdx != 0) {
+                        toIndex -= oldSizes.get(toChildIdx-1);
+                    }
+                }
+            }
+            else {
+                if (left instanceof SizedParentNode sn) {
+                    Sizes oldSizes = sn.sizes();
+                    while (oldSizes.get(fromChildIdx) <= fromIndex) {
+                        fromChildIdx++;
+                    }
+                    if (fromChildIdx != 0) {
+                        fromIndex -= oldSizes.get(fromChildIdx-1);
+                    }
+                }
+                if (right instanceof SizedParentNode sn) {
+                    Sizes oldSizes = sn.sizes();
+                    while (oldSizes.get(toChildIdx) <= toIndex) {
+                        toChildIdx++;
+                    }
+                    if (toChildIdx != 0) {
+                        toIndex -= oldSizes.get(toChildIdx-1);
+                    }
+                }
+            }
+            stack[i--] = new State((ParentNode) left, (ParentNode) right, isLeftmost, isRightmost, fromChildIdx, toChildIdx);
+            isLeftmost = isLeftmost && fromChildIdx == 0;
+            isRightmost = isRightmost && toChildIdx == right.children.length-1;
+            left = left.getEditableChild(fromChildIdx);
+            right = right.getEditableChild(toChildIdx);
+            shift -= SHIFT;
+            fromChildIdx = (int) (rShiftU(fromIndex, shift) & MASK);
+            toChildIdx = (int) (rShiftU(toIndex, shift) & MASK);
+        }
+        
+        left = left.copyPrefix(left != right, fromChildIdx+1);
+        right = right.copySuffix(true, toChildIdx);
+        int leftRootShift = 0, rightRootShift = 0;
+        
+        for (i = 0, shift = SHIFT; i < stack.length; i++, shift += SHIFT) {
+            State state = stack[i];
+            if (!isLeftmost) {
+                // To avoid breaking the suffix copy, we only do the prefix copy in-place if left != right (no aliasing).
+                // Unfortunately, if we need out-of-place, the copy method disowns copied children, because it assumes that
+                // the existing tree is now sharing children with a new tree. But here we are discarding the existing tree.
+                // So we copy-and-restore ownership of children.
+                var oldOwns = state.left.owns;
+                // TODO: copyPrefix can introduce sizes - due to non-full leaf - that are then obviated by the operation that called split
+                left = state.left.copyPrefix(state.left != state.right || isRightmost, state.fromChildIdx, left, shift);
+                ((ParentNode) left).owns = oldOwns; // Don't worry about the removed suffix - trailing ownership is ignored
+                leftRootShift = shift;
+            }
+            if (!isRightmost) {
+                right = state.right.copySuffix(true, state.toChildIdx, right, state.isRightmost, shift);
+                rightRootShift = shift;
+            }
+            isLeftmost = state.isLeftmost;
+            isRightmost = state.isRightmost;
+        }
+        
+        nodes[0] = left; nodes[1] = right;
+        rootShifts[0] = leftRootShift; rootShifts[1] = rightRootShift;
+//        return new SplitResult(left, right, leftRootShift, rightRootShift);
+    }
+    
+    private static void splitRec2(int fromIndex, int toIndex, Node[] nodes, int[] rootShifts, boolean isLeftmost, boolean isRightmost, int shift) {
         int fromChildIdx = (int) (rShiftU(fromIndex, shift) & MASK);
         int toChildIdx = (int) (rShiftU(toIndex, shift) & MASK);
         if (shift == 0) {
@@ -2077,12 +2171,11 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             }
         }
         
-        int childShift = shift - SHIFT;
         boolean isChildLeftmost = isLeftmost && fromChildIdx == 0;
         boolean isChildRightmost = isRightmost && toChildIdx == right.children.length-1;
         nodes[0] = left.getEditableChild(fromChildIdx);
         nodes[1] = right.getEditableChild(toChildIdx);
-        splitRec(fromIndex, toIndex, nodes, rootShifts, isChildLeftmost, isChildRightmost, childShift);
+        splitRec(fromIndex, toIndex, nodes, rootShifts, isChildLeftmost, isChildRightmost, shift - SHIFT);
         
         if (!isChildLeftmost) {
             // To avoid breaking the suffix copy, we only do the prefix copy in-place if left != right (no aliasing).
@@ -2376,6 +2469,14 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     // for the tree to increase in height, because the search-step invariant is more lenient on how wasted space can be
     // distributed, which makes it easier to accumulate more of it.
     
+    static int countGrandchildren(Node node) {
+        int count = 0;
+        for (Object child : node.children) {
+            count += ((Node) child).children.length;
+        }
+        return count;
+    }
+    
     private static void rebalance(Node[] nodes, int shift, boolean isRightmost, boolean isRightFirstChildEmpty) {
         // Assume left and right are editable
         
@@ -2391,13 +2492,14 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         
         Object[] leftChildren = left.children;
         Object[] rightChildren = right.children;
-        int totalNodes = 0;
-        for (Object child : leftChildren) {
-            totalNodes += ((Node) child).children.length;
-        }
-        for (Object child : rightChildren) {
-            totalNodes += ((Node) child).children.length;
-        }
+        int totalNodes = countGrandchildren(left) + countGrandchildren(right);
+//        int totalNodes = 0;
+//        for (Object child : leftChildren) {
+//            totalNodes += ((Node) child).children.length;
+//        }
+//        for (Object child : rightChildren) {
+//            totalNodes += ((Node) child).children.length;
+//        }
         
         int minLength = 1 + ((totalNodes-1) >>> SHIFT);
         int maxLength = minLength + MARGIN;
@@ -3179,8 +3281,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             return (int) ((owns & mask(take)) << keep);
         }
         
-        static int removeFromOwnership(int owns, int remove) {
-            return (int) ((owns & mask(remove)) | ((owns >>> 1) & ~mask(remove)));
+        static int removeFromOwnership(int owns, int index, int count) {
+            return (int) ((owns & mask(index)) | ((owns >>> count) & ~mask(index)));
         }
         
         static int mask(int shift) {
@@ -3319,31 +3421,33 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             // Assume this and from are owned
             // At most one of skip/take will be non-zero
             // If take == 0, from/fromDeathRow are unused
+            assert take == 0 || (skip == 0 && from != null);
             
             // Remove deleted children
-            int keep, newLen;
+            int newLen;
             var newOwns = owns;
             Object[] newChildren;
             if (deathRow != 0) {
                 Object[] oldChildren = children;
-                int len = oldChildren.length;
-                int toRemove = Long.bitCount(deathRow);
+                int i = 0, j = 0, len = oldChildren.length, toRemove = Long.bitCount(deathRow);
                 newLen = len - skip - toRemove + take;
                 newChildren = newLen == len ? oldChildren : new Object[newLen];
-                keep = 0;
-                for (int i = 0; i < len; i++) {
-                    if ((deathRow & (1L << i)) != 0 || skip-- > 0) {
-                        newOwns = removeFromOwnership(newOwns, i);
+                for (; deathRow != 0; i++) {
+                    if (deathRow == (deathRow &= ~(1L << i)) && skip-- <= 0) {
+                        newChildren[j++] = oldChildren[i];
                     }
                     else {
-                        newChildren[keep++] = oldChildren[i];
+                        newOwns = removeFromOwnership(newOwns, i, 1);
                     }
                 }
+                skip = Math.max(skip, 0);
+                System.arraycopy(oldChildren, i + skip, newChildren, j, len - i - skip);
+                newOwns = removeFromOwnership(newOwns, i, skip);
             }
             else if (skip != take) {
-                newLen = (keep = children.length - skip) + take;
+                newLen = children.length - skip + take;
                 newChildren = Arrays.copyOfRange(children, skip, newLen);
-                newOwns = skipOwnership(newOwns, skip, keep);
+                newOwns = skipOwnership(newOwns, skip, newLen - take);
             }
             else { // deathRow == skip == take == 0; nothing to do
                 return;
@@ -3353,19 +3457,18 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 // Add adopted children
                 var fromOwns = from.owns;
                 Object[] fromChildren = from.children;
-                if (fromDeathRow != 0) {
-                    for (int i = 0; keep < newLen; i++) {
-                        if ((fromDeathRow & (1L << i)) == 0) {
-                            newOwns |= ((1 << i) & fromOwns) != 0 ? (1 << keep) : 0;
-                            newChildren[keep++] = fromChildren[i];
-                        }
+                int i = 0, j = newLen - take;
+                for (; fromDeathRow != 0 && j < newLen; i++) {
+                    if (fromDeathRow == (fromDeathRow &= ~(1L << i))) {
+                        newOwns |= (fromOwns & (1 << i)) != 0 ? (1 << j) : 0;
+                        newChildren[j++] = fromChildren[i];
                     }
                 }
-                else {
-                    System.arraycopy(fromChildren, 0, newChildren, keep, take);
-                    newOwns |= takeOwnership(keep, take, fromOwns);
-                }
+                System.arraycopy(fromChildren, i, newChildren, j, newLen - j);
+                newOwns |= takeOwnership(j, newLen - j, fromOwns >>> i);
             }
+            
+            // TODO: newOwns |= takeOwnership... problem with trailing/previously-ignored bits of newOwns already being 1?
             
             owns = newOwns;
             children = newChildren;
@@ -3696,9 +3799,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 // Size changed
                 oldSizes.set(0, newSize);
                 int delta = newSize - currSize;
-                for (int i = 1; i < len; i++) {
-                    oldSizes.inc(i, delta);
-                }
+                oldSizes.cumulate(1, delta);
             }
             return this;
         }
@@ -3712,7 +3813,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         abstract Sizes copyRange(int from, int to);
         abstract Sizes arrayCopy(Sizes src, int srcPos, int len);
         abstract int fill(int from, int to, int shift);
-        abstract void cumulate1(int from);
+        abstract void cumulate(int from, int amount);
         
         void inc(int i, int size) {
             set(i, get(i) + size);
@@ -3792,9 +3893,9 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 return lastSize + 1;
             }
             
-            void cumulate1(int from) {
+            void cumulate(int from, int amount) {
                 for (int i = from; i < sizes.length; i++) {
-                    sizes[i]++;
+                    sizes[i] += amount;
                 }
             }
         }
@@ -3841,9 +3942,9 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 return lastSize + 1;
             }
             
-            void cumulate1(int from) {
+            void cumulate(int from, int amount) {
                 for (int i = from; i < sizes.length; i++) {
-                    sizes[i]++;
+                    sizes[i] += amount;
                 }
             }
         }
@@ -3890,9 +3991,9 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 return lastSize + 1;
             }
             
-            void cumulate1(int from) {
+            void cumulate(int from, int amount) {
                 for (int i = from; i < sizes.length; i++) {
-                    sizes[i]++;
+                    sizes[i] += amount;
                 }
             }
         }

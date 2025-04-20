@@ -30,11 +30,12 @@ public class Main {
     }
     
     static void zigZagAddBench() {
-        int size = 1_000;
+        int size = 1000_000;
         int sum = 0;
-        for (int i = 0; i < 100_000; i++) {
+        for (int i = 0; i < 1_00; i++) {
+//            List<Integer> list = new LinkedList<>();
 //            List<Integer> list = new ArrayList<>(); // ~24 sec @size=1k,i=100k
-            List<Integer> list = new TrieForkJoinList<>(); // ~180 sec
+            List<Integer> list = new TrieForkJoinList<>(); // ~96 sec
             zigZagAdd(list, size);
             sum += list.size();
         }
