@@ -590,7 +590,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 else {
                     // Optimistic insert: There is space in the current leaf, and inserting
                     // an element would not decrease ancestors' balance, so just do it.
-                    // TODO: This does not check if ancestors can now become not-Sized
+                    // TODO: This (and directAppend) does not check if ancestors can now become not-Sized
+                    // TODO: Can potentially have (full) Sized under not-Sized? Is that okay?
                     checkNewSize(size, 1);
                     modCount++;
                     size++;
@@ -2540,7 +2541,11 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         ParentNode lNode = left, rNode = left;
         Object[] lchildren = leftChildren, rchildren = leftChildren;
         Node lastNode = isRightmost ? (Node) rightChildren[rightChildren.length-1] : null;
-        int i = 0, step = 1, llen = leftChildren.length, rlen = llen, childShift = shift - SHIFT, right0 = isRightFirstChildEmpty ? 1 : 0;
+        int step = 1, llen = leftChildren.length, rlen = llen,
+            childShift = shift - SHIFT, right0 = isRightFirstChildEmpty ? 1 : 0,
+            i = left instanceof SizedParentNode ? 0 : llen-1; // If not-Sized, all children (except last) must be full.
+                                                              // If Sized, we could binary search, but when I tried
+                                                              // that it didn't make an appreciable difference.
         long leftDeathRow = 0, rightDeathRow = right0; // long assumes SPAN <= 64
         boolean updatedLeft = false;
         
@@ -3384,10 +3389,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 // if taken children are not full, we must be sized
                 if (isRightmost || fromSizes.get(take-1) != lShift(take, shift)) {
                     newSizes = Sizes.of(shift, newLen);
-                    int lastSize = newSizes.fill(0, keep, shift);
-                    for (int i = 0; i < take; i++) {
-                        newSizes.set(keep+i, lastSize + fromSizes.get(i));
-                    }
+                    newSizes.fill(0, keep, shift);
+                    newSizes.arrayCopy(fromSizes, 0, keep, take);
                 }
             }
             // else we are taking from a not-sized node, so it either has full children or is rightmost,
@@ -3663,26 +3666,22 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             
             // Handle sizes
             int lastSize = oldSizes.get(oldLen-1);
-            Sizes newSizes = (skip == 0 ? lastSize : (lastSize -= oldSizes.get(skip-1))) != lShift(keep, shift)
+            Sizes newSizes = (skip == 0 ? lastSize : (lastSize - oldSizes.get(skip-1))) != lShift(keep, shift)
                 ? skip != take
                     ? oldSizes.copyRange(skip, skip + newLen)
-                    : (isOwned ? oldSizes : Sizes.of(shift, newLen)).arrayCopy(oldSizes, skip, keep)
+                    : (isOwned ? oldSizes : Sizes.of(shift, newLen)).arrayCopy(oldSizes, skip, 0, keep)
                 : null;
             
             if (from instanceof SizedParentNode sn) {
                 Sizes fromSizes = sn.sizes();
                 if (newSizes != null) {
-                    for (int i = 0; i < take; i++) {
-                        newSizes.set(keep+i, lastSize + fromSizes.get(i));
-                    }
+                    newSizes.arrayCopy(fromSizes, 0, keep, take);
                 }
                 else if (isRightmost || fromSizes.get(take-1) != lShift(take, shift)) {
                     // taken children are not full - we need to be sized
                     newSizes = Sizes.of(shift, newLen);
-                    lastSize = newSizes.fill(0, keep, shift);
-                    for (int i = 0; i < take; i++) {
-                        newSizes.set(keep+i, lastSize + fromSizes.get(i));
-                    }
+                    newSizes.fill(0, keep, shift);
+                    newSizes.arrayCopy(fromSizes, 0, keep, take);
                 }
             }
             else if (newSizes != null) {
@@ -3811,7 +3810,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         abstract Object unwrap();
         abstract Sizes copy();
         abstract Sizes copyRange(int from, int to);
-        abstract Sizes arrayCopy(Sizes src, int srcPos, int len);
+        abstract Sizes arrayCopy(Sizes src, int srcPos, int destPos, int length);
         abstract int fill(int from, int to, int shift);
         abstract void cumulate(int from, int amount);
         
@@ -3874,13 +3873,12 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 return this;
             }
             
-            OfByte arrayCopy(Sizes src, int srcPos, int len) {
-                assert srcPos > 0;
-                byte[] other = (byte[]) src.unwrap();
-                int initialSize = other[srcPos-1]+1;
-                System.arraycopy(other, srcPos, sizes, 0, len);
-                for (int i = 0; i < len; i++) {
-                    sizes[i] -= initialSize;
+            OfByte arrayCopy(Sizes src, int srcPos, int destPos, int length) {
+                byte[] a = sizes, b = (byte[]) src.unwrap();
+                int delta = (destPos == 0 ? 0 : a[destPos-1]+1) - (srcPos == 0 ? 0 : b[srcPos-1]+1);
+                System.arraycopy(b, srcPos, a, destPos, length);
+                for (int i = 0; i < length; i++) {
+                    a[destPos + i] += delta;
                 }
                 return this;
             }
@@ -3923,13 +3921,12 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 return this;
             }
             
-            OfShort arrayCopy(Sizes src, int srcPos, int len) {
-                assert srcPos > 0;
-                char[] other = (char[]) src.unwrap();
-                int initialSize = other[srcPos-1]+1;
-                System.arraycopy(other, srcPos, sizes, 0, len);
-                for (int i = 0; i < len; i++) {
-                    sizes[i] -= initialSize;
+            OfShort arrayCopy(Sizes src, int srcPos, int destPos, int length) {
+                char[] a = sizes, b = (char[]) src.unwrap();
+                int delta = (destPos == 0 ? 0 : a[destPos-1]+1) - (srcPos == 0 ? 0 : b[srcPos-1]+1);
+                System.arraycopy(b, srcPos, a, destPos, length);
+                for (int i = 0; i < length; i++) {
+                    a[destPos + i] += delta;
                 }
                 return this;
             }
@@ -3972,13 +3969,12 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 return this;
             }
             
-            OfInt arrayCopy(Sizes src, int srcPos, int len) {
-                assert srcPos > 0;
-                int[] other = (int[]) src.unwrap();
-                int initialSize = other[srcPos-1]+1;
-                System.arraycopy(other, srcPos, sizes, 0, len);
-                for (int i = 0; i < len; i++) {
-                    sizes[i] -= initialSize;
+            OfInt arrayCopy(Sizes src, int srcPos, int destPos, int length) {
+                int[] a = sizes, b = (int[]) src.unwrap();
+                int delta = (destPos == 0 ? 0 : a[destPos-1]+1) - (srcPos == 0 ? 0 : b[srcPos-1]+1);
+                System.arraycopy(b, srcPos, a, destPos, length);
+                for (int i = 0; i < length; i++) {
+                    a[destPos + i] += delta;
                 }
                 return this;
             }
