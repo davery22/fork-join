@@ -6,363 +6,220 @@ import java.util.function.IntFunction;
 import java.util.function.Predicate;
 import java.util.function.UnaryOperator;
 import java.util.stream.Stream;
-import java.util.stream.StreamSupport;
 
-// Copied and adjusted from java.util.ReverseOrderListView
+// A reversed() list implementation that mostly delegates to the JDK-internal reversed() list implementation,
+// but tacks on necessary overrides for ForkJoinList methods.
 class ReverseOrderForkJoinListView<E> implements ForkJoinList<E> {
-    final ForkJoinList<E> base;
+    final ForkJoinList<E> list;
+    final List<E> rlist;
     
-    public static <T> ForkJoinList<T> of(ForkJoinList<T> list) {
+    public static <T> ForkJoinList<T> of(ForkJoinList<T> list, List<T> rlist) {
         if (list instanceof ReverseOrderForkJoinListView<T> rolv) {
-            return rolv.base;
+            return rolv.list;
         } else if (list instanceof RandomAccess) {
-            return new ReverseOrderForkJoinListView.Rand<>(list);
+            return new ReverseOrderForkJoinListView.Rand<>(list, rlist);
         } else {
-            return new ReverseOrderForkJoinListView<>(list);
+            return new ReverseOrderForkJoinListView<>(list, rlist);
         }
     }
     
     static class Rand<E> extends ReverseOrderForkJoinListView<E> implements RandomAccess {
-        Rand(ForkJoinList<E> list) {
-            super(list);
+        Rand(ForkJoinList<E> list, List<E> rlist) {
+            super(list, rlist);
         }
     }
     
-    private ReverseOrderForkJoinListView(ForkJoinList<E> list) {
-        this.base = list;
+    private ReverseOrderForkJoinListView(ForkJoinList<E> list, List<E> rlist) {
+        this.list = list;
+        this.rlist = rlist;
     }
-    
-    class DescendingIterator implements Iterator<E> {
-        final ListIterator<E> it = base.listIterator(base.size());
-        public boolean hasNext() { return it.hasPrevious(); }
-        public E next() { return it.previous(); }
-        public void remove() {
-            it.remove();
-        }
-    }
-    
-    class DescendingListIterator implements ListIterator<E> {
-        final ListIterator<E> it;
-        
-        DescendingListIterator(int size, int pos) {
-            if (pos < 0 || pos > size)
-                throw new IndexOutOfBoundsException();
-            it = base.listIterator(size - pos);
-        }
-        
-        public boolean hasNext() {
-            return it.hasPrevious();
-        }
-        
-        public E next() {
-            return it.previous();
-        }
-        
-        public boolean hasPrevious() {
-            return it.hasNext();
-        }
-        
-        public E previous() {
-            return it.next();
-        }
-        
-        public int nextIndex() {
-            return base.size() - it.nextIndex();
-        }
-        
-        public int previousIndex() {
-            return nextIndex() - 1;
-        }
-        
-        public void remove() {
-            it.remove();
-        }
-        
-        public void set(E e) {
-            it.set(e);
-        }
-        
-        public void add(E e) {
-            it.add(e);
-            it.previous();
-        }
-    }
-    
-    // ========== Iterable ==========
-    
-    public void forEach(Consumer<? super E> action) {
-        for (E e : this)
-            action.accept(e);
-    }
-    
-    public Iterator<E> iterator() {
-        return new DescendingIterator();
-    }
-    
-    public Spliterator<E> spliterator() {
-        return Spliterators.spliterator(this, Spliterator.ORDERED);
-    }
-    
-    // ========== Collection ==========
-    
-    public boolean add(E e) {
-        base.add(0, e);
-        return true;
-    }
-    
-    public boolean addAll(Collection<? extends E> c) {
-        @SuppressWarnings("unchecked")
-        E[] adds = (E[]) c.toArray();
-        if (adds.length == 0) {
-            return false;
-        } else {
-            base.addAll(0, Arrays.asList(reverse(adds)));
-            return true;
-        }
-    }
-    
-    public void clear() {
-        base.clear();
-    }
-    
-    public boolean contains(Object o) {
-        return base.contains(o);
-    }
-    
-    public boolean containsAll(Collection<?> c) {
-        return base.containsAll(c);
-    }
-    
-    // copied from AbstractList
-    public boolean equals(Object o) {
-        if (o == this)
-            return true;
-        if (!(o instanceof List))
-            return false;
-        
-        ListIterator<E> e1 = listIterator();
-        ListIterator<?> e2 = ((List<?>) o).listIterator();
-        while (e1.hasNext() && e2.hasNext()) {
-            E o1 = e1.next();
-            Object o2 = e2.next();
-            if (!(o1==null ? o2==null : o1.equals(o2)))
-                return false;
-        }
-        return !(e1.hasNext() || e2.hasNext());
-    }
-    
-    // copied from AbstractList
-    public int hashCode() {
-        int hashCode = 1;
-        for (E e : this)
-            hashCode = 31*hashCode + (e==null ? 0 : e.hashCode());
-        return hashCode;
-    }
-    
-    public boolean isEmpty() {
-        return base.isEmpty();
-    }
-    
-    public Stream<E> parallelStream() {
-        return StreamSupport.stream(spliterator(), true);
-    }
-    
-    // copied from AbstractCollection
-    public boolean remove(Object o) {
-        Iterator<E> it = iterator();
-        if (o==null) {
-            while (it.hasNext()) {
-                if (it.next()==null) {
-                    it.remove();
-                    return true;
-                }
-            }
-        } else {
-            while (it.hasNext()) {
-                if (o.equals(it.next())) {
-                    it.remove();
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-    
-    // copied from AbstractCollection
-    public boolean removeAll(Collection<?> c) {
-        Objects.requireNonNull(c);
-        boolean modified = false;
-        Iterator<?> it = iterator();
-        while (it.hasNext()) {
-            if (c.contains(it.next())) {
-                it.remove();
-                modified = true;
-            }
-        }
-        return modified;
-    }
-    
-    // copied from AbstractCollection
-    public boolean retainAll(Collection<?> c) {
-        Objects.requireNonNull(c);
-        boolean modified = false;
-        Iterator<E> it = iterator();
-        while (it.hasNext()) {
-            if (!c.contains(it.next())) {
-                it.remove();
-                modified = true;
-            }
-        }
-        return modified;
-    }
-    
-    public int size() {
-        return base.size();
-    }
-    
-    public Stream<E> stream() {
-        return StreamSupport.stream(spliterator(), false);
-    }
-    
-    public Object[] toArray() {
-        return reverse(base.toArray());
-    }
-    
-    public <T> T[] toArray(T[] a) {
-        return toArrayReversed(base, a);
-    }
-    
-    public <T> T[] toArray(IntFunction<T[]> generator) {
-        return reverse(base.toArray(generator));
-    }
-    
-    // copied from AbstractCollection
-    public String toString() {
-        Iterator<E> it = iterator();
-        if (! it.hasNext())
-            return "[]";
-        
-        StringBuilder sb = new StringBuilder();
-        sb.append('[');
-        for (;;) {
-            E e = it.next();
-            sb.append(e == this ? "(this Collection)" : e);
-            if (! it.hasNext())
-                return sb.append(']').toString();
-            sb.append(',').append(' ');
-        }
-    }
-    
-    // ========== List ==========
     
     public void add(int index, E element) {
-        int size = base.size();
-        checkClosedRange(index, size);
-        base.add(size - index, element);
+        rlist.add(index, element);
+    }
+    
+    public boolean add(E e) {
+        return rlist.add(e);
     }
     
     public boolean addAll(int index, Collection<? extends E> c) {
-        int size = base.size();
-        checkClosedRange(index, size);
-        @SuppressWarnings("unchecked")
-        E[] adds = (E[]) c.toArray();
-        if (adds.length == 0) {
-            return false;
-        } else {
-            base.addAll(size - index, Arrays.asList(reverse(adds)));
-            return true;
-        }
+        return rlist.addAll(index, c);
     }
     
-    public E get(int i) {
-        int size = base.size();
-        Objects.checkIndex(i, size);
-        return base.get(size - i - 1);
+    public boolean addAll(Collection<? extends E> c) {
+        return rlist.addAll(c);
+    }
+    
+    public void addFirst(E e) {
+        rlist.addFirst(e);
+    }
+    
+    public void addLast(E e) {
+        rlist.addLast(e);
+    }
+    
+    public void clear() {
+        rlist.clear();
+    }
+    
+    public boolean contains(Object o) {
+        return rlist.contains(o);
+    }
+    
+    public boolean containsAll(Collection<?> c) {
+        return rlist.containsAll(c);
+    }
+    
+    public boolean equals(Object o) {
+        return rlist.equals(o);
+    }
+    
+    public E get(int index) {
+        return rlist.get(index);
+    }
+    
+    public E getFirst() {
+        return rlist.getFirst();
+    }
+    
+    public E getLast() {
+        return rlist.getLast();
+    }
+    
+    public int hashCode() {
+        return rlist.hashCode();
     }
     
     public int indexOf(Object o) {
-        int i = base.lastIndexOf(o);
-        return i == -1 ? -1 : base.size() - i - 1;
+        return rlist.indexOf(o);
+    }
+    
+    public boolean isEmpty() {
+        return rlist.isEmpty();
+    }
+    
+    public Iterator<E> iterator() {
+        return rlist.iterator();
     }
     
     public int lastIndexOf(Object o) {
-        int i = base.indexOf(o);
-        return i == -1 ? -1 : base.size() - i - 1;
+        return rlist.lastIndexOf(o);
     }
     
     public ListIterator<E> listIterator() {
-        return new DescendingListIterator(base.size(), 0);
+        return rlist.listIterator();
     }
     
     public ListIterator<E> listIterator(int index) {
-        int size = base.size();
-        checkClosedRange(index, size);
-        return new DescendingListIterator(size, index);
+        return rlist.listIterator(index);
     }
     
     public E remove(int index) {
-        int size = base.size();
-        Objects.checkIndex(index, size);
-        return base.remove(size - index - 1);
+        return rlist.remove(index);
     }
     
-    public boolean removeIf(Predicate<? super E> filter) {
-        return base.removeIf(filter);
+    public boolean remove(Object o) {
+        return rlist.remove(o);
+    }
+    
+    public boolean removeAll(Collection<?> c) {
+        return rlist.removeAll(c);
+    }
+    
+    public E removeFirst() {
+        return rlist.removeFirst();
+    }
+    
+    public E removeLast() {
+        return rlist.removeLast();
     }
     
     public void replaceAll(UnaryOperator<E> operator) {
-        base.replaceAll(operator);
+        rlist.replaceAll(operator);
     }
     
-    public void sort(Comparator<? super E> c) {
-        base.sort(Collections.reverseOrder(c));
+    public boolean retainAll(Collection<?> c) {
+        return rlist.retainAll(c);
     }
     
     public E set(int index, E element) {
-        int size = base.size();
-        Objects.checkIndex(index, size);
-        return base.set(size - index - 1, element);
+        return rlist.set(index, element);
     }
     
+    public int size() {
+        return rlist.size();
+    }
+    
+    public void sort(Comparator<? super E> c) {
+        rlist.sort(c);
+    }
+    
+    public Spliterator<E> spliterator() {
+        return rlist.spliterator();
+    }
+    
+    public Object[] toArray() {
+        return rlist.toArray();
+    }
+    
+    public <T> T[] toArray(T[] a) {
+        return rlist.toArray(a);
+    }
+    
+    public <T> T[] toArray(IntFunction<T[]> generator) {
+        return rlist.toArray(generator);
+    }
+    
+    public String toString() {
+        return rlist.toString();
+    }
+    
+    public Stream<E> parallelStream() {
+        return rlist.parallelStream();
+    }
+    
+    public Stream<E> stream() {
+        return rlist.stream();
+    }
+    
+    public boolean removeIf(Predicate<? super E> filter) {
+        return rlist.removeIf(filter);
+    }
+    
+    public void forEach(Consumer<? super E> action) {
+        rlist.forEach(action);
+    }
+    
+    // ========== ForkJoinList impl ==========
+    
+    public boolean join(Collection<? extends E> other) {
+        return list.join(0, toCollectionReversed(other));
+    }
+    
+    public boolean join(int index, Collection<? extends E> other) {
+        int size = list.size();
+        checkClosedRange(index, size);
+        return list.join(size - index, toCollectionReversed(other));
+    }
+    
+    public ForkJoinList<E> fork() {
+        return list.fork().reversed();
+    }
+    
+    public ForkJoinList<E> subList(int fromIndex, int toIndex) {
+        int size = list.size();
+        Objects.checkFromToIndex(fromIndex, toIndex, size);
+        return list.subList(size - toIndex, size - fromIndex).reversed();
+    }
+    
+    // ========== Utils ==========
+
     static void checkClosedRange(int index, int size) {
         if (index < 0 || index > size) {
             throw new IndexOutOfBoundsException("Index: " + index + ", Size: " + size);
         }
     }
-    
-    // ========== ForkJoinList ==========
-    
-    public boolean join(Collection<? extends E> other) {
-        return base.join(0, toCollectionReversed(other));
-    }
-    
-    public boolean join(int index, Collection<? extends E> other) {
-        int size = base.size();
-        checkClosedRange(index, size);
-        return base.join(size - index, toCollectionReversed(other));
-    }
-    
-    public ForkJoinList<E> fork() {
-        return ReverseOrderForkJoinListView.of(base.fork());
-    }
-    
-    public ForkJoinList<E> subList(int fromIndex, int toIndex) {
-        int size = base.size();
-        Objects.checkFromToIndex(fromIndex, toIndex, size);
-        return ReverseOrderForkJoinListView.of(base.subList(size - toIndex, size - fromIndex));
-    }
-    
-    static <T> Collection<T> toCollectionReversed(Collection<T> collection) {
-        if (collection instanceof SequencedCollection<T> sc) {
-            return sc.reversed();
-        }
-        @SuppressWarnings("unchecked")
-        T[] arr = (T[]) collection.toArray();
-        return Arrays.asList(reverse(arr));
-    }
-    
-    // Utils
-    
+
     static <T> T[] reverse(T[] a) {
         int limit = a.length / 2;
         for (int i = 0, j = a.length - 1; i < limit; i++, j--) {
@@ -373,16 +230,12 @@ class ReverseOrderForkJoinListView<E> implements ForkJoinList<E> {
         return a;
     }
     
-    static <T> T[] toArrayReversed(Collection<?> coll, T[] array) {
-        T[] newArray = reverse(coll.toArray(Arrays.copyOfRange(array, 0, 0)));
-        if (newArray.length > array.length) {
-            return newArray;
-        } else {
-            System.arraycopy(newArray, 0, array, 0, newArray.length);
-            if (array.length > newArray.length) {
-                array[newArray.length] = null;
-            }
-            return array;
+    static <T> Collection<T> toCollectionReversed(Collection<T> collection) {
+        if (collection instanceof SequencedCollection<T> sc) {
+            return sc.reversed();
         }
+        @SuppressWarnings("unchecked")
+        T[] arr = (T[]) collection.toArray();
+        return Arrays.asList(reverse(arr));
     }
 }

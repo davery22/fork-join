@@ -10,6 +10,6 @@ public interface ForkJoinList<E> extends List<E> {
     ForkJoinList<E> subList(int fromIndex, int toIndex);
     
     default ForkJoinList<E> reversed() {
-        return ReverseOrderForkJoinListView.of(this);
+        return ReverseOrderForkJoinListView.of(this, List.super.reversed());
     }
 }

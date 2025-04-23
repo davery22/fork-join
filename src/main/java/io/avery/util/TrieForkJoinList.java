@@ -904,8 +904,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 rightRootShift = right.rootShift;
             }
             size += numNew;
-            Node[] nodes = { rightRoot, getEditableRoot() };
-            concatSubTree(nodes, rightRootShift, rootShift);
+            concatSubTree(new Node[]{ rightRoot, getEditableRoot() }, rightRootShift, rootShift);
             return true;
         }
         
@@ -1174,8 +1173,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         if (index == 0) {
             // Concat root onto element
             size++;
-            Node[] nodes = { new Node(new Object[]{ element }), getEditableRoot() };
-            concatSubTree(nodes, 0, rootShift);
+            Node elementRoot = new Node(new Object[]{ element });
+            concatSubTree(new Node[]{ elementRoot, getEditableRoot() }, 0, rootShift);
             return;
         }
         
@@ -2170,8 +2169,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         // Concatenate trees, assign root
         // TODO: Avoid editable if no rebalancing needed?
         size += right.size;
-        Node[] nodes = { getEditableRoot(), right.getEditableRoot() };
-        concatSubTree(nodes, rootShift, right.rootShift);
+        concatSubTree(new Node[]{ getEditableRoot(), right.getEditableRoot() }, rootShift, right.rootShift);
         return true;
     }
     
@@ -2645,8 +2643,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 size += right.size + leftSuffixSize;
             }
             
-            Node[] nodes = { getEditableRoot(), right.getEditableRoot() };
-            concatSubTree(nodes, rootShift, right.rootShift);
+            concatSubTree(new Node[]{ getEditableRoot(), right.getEditableRoot() }, rootShift, right.rootShift);
             return true;
         }
         
@@ -2655,8 +2652,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             size += right.size;
             right.trimTailToSize();
             right.pushDownTail();
-            Node[] nodes = { right.getEditableRoot(), getEditableRoot() };
-            concatSubTree(nodes, right.rootShift, rootShift);
+            concatSubTree(new Node[]{ right.getEditableRoot(), getEditableRoot() }, right.rootShift, rootShift);
             return true;
         }
         
@@ -3471,7 +3467,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         
         @Override
         SizedParentNode copyPrefix(boolean isOwned, int to) {
-            // TODO: Allow to become not-Sized? (if truncating; to < oldLen)
+            // TODO: Allow to become not-Sized? (if truncating, ie to < oldLen)
             int oldLen = children.length;
             if (to != oldLen) {
                 Object[] newChildren = Arrays.copyOf(children, to);
