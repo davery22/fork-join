@@ -910,24 +910,18 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         
         // Split root into left and right
-        Node[] splitRoots = { getEditableRoot(), getEditableRoot() };
-        int[] rootShifts = new int[2];
-        splitRec(index-1, index, splitRoots, rootShifts, true, true, rootShift);
-        Node rightRoot = splitRoots[1];
+        SplitResult sr = splitAroundRange(index-1, index, getEditableRoot(), rootShift);
         
         // Append elements onto left (using an auxiliary list around the left split node)
         TrieForkJoinList<E> left = new TrieForkJoinList<>();
         left.claimRoot();
-        left.rootShift = (byte) rootShifts[0];
-        left.root = splitRoots[0];
+        left.rootShift = (byte) sr.leftRootShift;
+        left.root = sr.leftRoot;
         left.directAppend(arr, 0, AppendMode.ALWAYS_EMPTY_SRC);
         
         // Concat right onto left
         size += numNew;
-        int newRootShift = left.rootShift;
-        splitRoots[0] = left.root;
-        splitRoots[1] = rightRoot;
-        concatSubTree(splitRoots, newRootShift, rootShifts[1]);
+        concatSubTree(new Node[]{ left.root, sr.rightRoot }, left.rootShift, sr.rightRootShift);
         return true;
     }
     
@@ -1186,30 +1180,18 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         
         // Split root into left and right
-        Node[] splitRoots = { getEditableRoot(), getEditableRoot() };
-        int[] rootShifts = new int[2];
-        splitRec(index-1, index, splitRoots, rootShifts, true, true, rootShift);
-        Node rightRoot = splitRoots[1];
+        SplitResult sr = splitAroundRange(index-1, index, getEditableRoot(), rootShift);
         
         // Append element onto left (using an auxiliary list around the left split node)
         TrieForkJoinList<E> left = new TrieForkJoinList<>();
         left.claimRoot();
-        left.rootShift = (byte) rootShifts[0];
-        left.root = splitRoots[0];
+        left.rootShift = (byte) sr.leftRootShift;
+        left.root = sr.leftRoot;
         left.directAppend(new Object[]{ element }, 0, AppendMode.ALWAYS_EMPTY_SRC);
-        
-        // Concat element onto left
-//        splitRoots[1] = new Node(new Object[]{ element });
-//        concatSubTree(splitRoots, rootShifts[0], 0);
         
         // Concat right onto left
         size++;
-//        int newRootShift = rootShift;
-//        splitRoots[0] = root;
-        int newRootShift = left.rootShift;
-        splitRoots[0] = left.root;
-        splitRoots[1] = rightRoot;
-        concatSubTree(splitRoots, newRootShift, rootShifts[1]);
+        concatSubTree(new Node[]{ left.root, sr.rightRoot }, left.rootShift, sr.rightRootShift);
     }
     
     @Override
@@ -1255,10 +1237,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             root = forkSuffixRec(index+1, this, getEditableRoot(), rootShift, true, true);
         }
         else {
-            Node[] splitRoots = { getEditableRoot(), getEditableRoot() };
-            int[] rootShifts = new int[2];
-            splitRec(index-1, index+1, splitRoots, rootShifts, true, true, rootShift);
-            concatSubTree(splitRoots, rootShifts[0], rootShifts[1]);
+            SplitResult sr = splitAroundRange(index-1, index+1, getEditableRoot(), rootShift);
+            concatSubTree(new Node[]{ sr.leftRoot, sr.rightRoot }, sr.leftRootShift, sr.rightRootShift);
         }
         return old;
     }
@@ -1876,10 +1856,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             //  code. Instead, I'm using the fact that removeRange = join(prefix, suffix), and optimizing to retain
             //  ownership of the prefix and suffix instead of forking.
             
-            int[] rootShifts = new int[2];
-            Node[] splitRoots = { getEditableRoot(), getEditableRoot() };
-            splitRec(fromIndex-1, toIndex, splitRoots, rootShifts, true, true, rootShift);
-            concatSubTree(splitRoots, rootShifts[0], rootShifts[1]);
+            SplitResult sr = splitAroundRange(fromIndex-1, toIndex, getEditableRoot(), rootShift);
+            concatSubTree(new Node[]{ sr.leftRoot, sr.rightRoot }, sr.leftRootShift, sr.rightRootShift);
         }
         
         preventNonFullLeafRoot();
@@ -2031,16 +2009,16 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         return ((ParentNode) node).copyRange(fromChildIdx, leftNode, toChildIdx, rightNode, shift);
     }
     
-    record SplitResult(Node leftRoot, Node rightRoot, int leftRootShift, int rightRootShift) {}
+    private record SplitResult(Node leftRoot, Node rightRoot, int leftRootShift, int rightRootShift) {}
     
-//    private static SplitResult splitAroundRange(int fromIndex, int toIndex, Node root, int shift) {
-    private static void splitRec(int fromIndex, int toIndex, Node[] nodes, int[] rootShifts, boolean isLeftmost, boolean isRightmost, int shift) {
+    // Somewhat unconventionally, the 'removed' range is exclusive of both fromIndex and toIndex.
+    // Said differently: fromIndex is the last index of the left split; toIndex is the first index of the right split.
+    private static SplitResult splitAroundRange(int fromIndex, int toIndex, Node root, int shift) {
         record State(ParentNode left, ParentNode right, boolean isLeftmost, boolean isRightmost, int fromChildIdx, int toChildIdx) {}
         
         State[] stack = new State[shift / SHIFT];
-//        Node left = root, right = root;
-//        boolean isLeftmost = true, isRightmost = true;
-        Node left = nodes[0], right = nodes[1];
+        Node left = root, right = root;
+        boolean isLeftmost = true, isRightmost = true;
         int fromChildIdx = (int) (rShiftU(fromIndex, shift) & MASK);
         int toChildIdx = (int) (rShiftU(toIndex, shift) & MASK);
         int i = stack.length-1;
@@ -2118,118 +2096,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             isRightmost = state.isRightmost;
         }
         
-        nodes[0] = left; nodes[1] = right;
-        rootShifts[0] = leftRootShift; rootShifts[1] = rightRootShift;
-//        return new SplitResult(left, right, leftRootShift, rightRootShift);
+        return new SplitResult(left, right, leftRootShift, rightRootShift);
     }
-    
-    private static void splitRec2(int fromIndex, int toIndex, Node[] nodes, int[] rootShifts, boolean isLeftmost, boolean isRightmost, int shift) {
-        int fromChildIdx = (int) (rShiftU(fromIndex, shift) & MASK);
-        int toChildIdx = (int) (rShiftU(toIndex, shift) & MASK);
-        if (shift == 0) {
-            nodes[0] = nodes[0].copyPrefix(nodes[0] != nodes[1], fromChildIdx+1);
-            nodes[1] = nodes[1].copySuffix(true, toChildIdx);
-            rootShifts[0] = rootShifts[1] = shift;
-            return;
-        }
-        
-        ParentNode left = (ParentNode) nodes[0], right = (ParentNode) nodes[1];
-        if (left == right) {
-            if (left instanceof SizedParentNode sn) {
-                Sizes oldSizes = sn.sizes();
-                while (oldSizes.get(fromChildIdx) <= fromIndex) {
-                    fromChildIdx++;
-                }
-                while (oldSizes.get(toChildIdx) <= toIndex) {
-                    toChildIdx++;
-                }
-                if (fromChildIdx != 0) {
-                    fromIndex -= oldSizes.get(fromChildIdx-1);
-                }
-                if (toChildIdx != 0) {
-                    toIndex -= oldSizes.get(toChildIdx-1);
-                }
-            }
-        }
-        else {
-            if (left instanceof SizedParentNode sn) {
-                Sizes oldSizes = sn.sizes();
-                while (oldSizes.get(fromChildIdx) <= fromIndex) {
-                    fromChildIdx++;
-                }
-                if (fromChildIdx != 0) {
-                    fromIndex -= oldSizes.get(fromChildIdx-1);
-                }
-            }
-            if (right instanceof SizedParentNode sn) {
-                Sizes oldSizes = sn.sizes();
-                while (oldSizes.get(toChildIdx) <= toIndex) {
-                    toChildIdx++;
-                }
-                if (toChildIdx != 0) {
-                    toIndex -= oldSizes.get(toChildIdx-1);
-                }
-            }
-        }
-        
-        boolean isChildLeftmost = isLeftmost && fromChildIdx == 0;
-        boolean isChildRightmost = isRightmost && toChildIdx == right.children.length-1;
-        nodes[0] = left.getEditableChild(fromChildIdx);
-        nodes[1] = right.getEditableChild(toChildIdx);
-        splitRec(fromIndex, toIndex, nodes, rootShifts, isChildLeftmost, isChildRightmost, shift - SHIFT);
-        
-        if (!isChildLeftmost) {
-            // To avoid breaking the suffix copy, we only do the prefix copy in-place if left != right (no aliasing).
-            // Unfortunately, if we need out-of-place, the copy method disowns copied children, because it assumes that
-            // the existing tree is now sharing children with a new tree. But here we are discarding the existing tree.
-            // So we copy-and-restore ownership of children.
-            var oldOwns = left.owns;
-            // TODO: copyPrefix can introduce sizes - due to non-full leaf - that are then obviated by the operation that called split
-            nodes[0] = left = left.copyPrefix(left != right || isChildRightmost, fromChildIdx, nodes[0], shift);
-            left.owns = oldOwns; // Don't worry about the removed suffix - trailing ownership is ignored
-            rootShifts[0] = shift;
-        }
-        if (!isChildRightmost) {
-            nodes[1] = right.copySuffix(true, toChildIdx, nodes[1], isRightmost, shift);
-            rootShifts[1] = shift;
-        }
-    }
-    
-    // Pros with a draining join:
-    //   a.join(b) can transfer ownership of b - no fork() / lazy copying
-    //
-    // Cons with a draining join:
-    //   a.join(a.subList(..)) is fine = "move subList to end"
-    //   a.join(a) is a little confusing = "clear and re-add everything (ie no-op)"
-    //    - here, the argument is not cleared
-    //   a.subList(..).join(a) doesn't make sense = "clear and re-add everything after (non-existent) subList?"
-    //    - here, the argument is not cleared, and the receiver is?!
-    //   risk of wasted effort if argument is immutable, ie clear() throws
-    //    - and clear() itself is risky if argument is a concurrent collection
-    //
-    // Pros with a copying join:
-    //   joining subLists, or subLists joining parents, is intuitive
-    //   no need to clear() argument just to be consistent with other cases
-    //    - so joining immutable or concurrent collections is also a non-issue
-    //   can always fall back to addAll()
-    //
-    // Cons with a copying join:
-    //   a.join(b) has to conservatively fork b, so future updates will lazy-copy
-    //
-    // if other is a known implementation: fork() it to ensure no unsafe sharing or mutation
-    //  - this also protects the list when joining itself, or a sublist
-    // else: addAll()
-    
-    // NOTE: Update if we add ForkJoinCollection superinterface
-    //   - Having a new superinterface force a change feels bad
-    //   - Plus, we are forking inputs unnecessarily just to see if it will yield the right type
-    //   - This buys convenience at the cost of (documented) surprise (ie fork() can have co-mod effects)
-    //     - Still less surprising than us mutating/destroying the argument...
-    //  We could instead make forking the caller's responsibility, and check type + unowned?
-    //   - Nope; we cannot assume caller is ok if we destroy something they gave us - still have to fork internally
-    //   - Plus, requiring arg.fork() before calling to get optimization is unintuitive and forgettable
-    
-    
     
     @Override
     public boolean join(Collection<? extends E> other) {
@@ -2793,24 +2661,17 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         
         // Split root into left and right
-        Node[] splitRoots = { getEditableRoot(), getEditableRoot() };
-        int[] rootShifts = new int[2];
-        splitRec(index-1, index, splitRoots, rootShifts, true, true, rootShift);
-        Node rightRoot = splitRoots[1];
+        SplitResult sr = splitAroundRange(index-1, index, getEditableRoot(), rootShift);
         
         // Concat other tree onto left
         size = index + right.size + tailSize; // Adjust so that size-tailSize == total size under both roots
         right.trimTailToSize();
         right.pushDownTail();
-        splitRoots[1] = right.root;
-        concatSubTree(splitRoots, rootShifts[0], right.rootShift);
+        concatSubTree(new Node[]{ sr.leftRoot, right.root }, sr.leftRootShift, right.rootShift);
         
         // Concat right onto left
         size = tailOffset + right.size + tailSize;
-        int newRootShift = rootShift;
-        splitRoots[0] = root;
-        splitRoots[1] = rightRoot;
-        concatSubTree(splitRoots, newRootShift, rootShifts[1]);
+        concatSubTree(new Node[]{ root, sr.rightRoot }, rootShift, sr.rightRootShift);
         return true;
     }
     
@@ -3985,99 +3846,4 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             }
         }
     }
-    
-    // children-elements:
-    //  - for SPAN=16: 16(byte=1) OR 32(short=2) OR 64(int=4)
-    //  - for SPAN=32: 32(byte=1) OR 64(short=2) OR 128(int=4)
-    //  - for SPAN=64: 64(byte=1) OR 128(short=2) OR 256(int=4)
-    // below, assume SPAN=16
-    //
-    // Node sizes:
-    //  - total/each = 64 + children-elements
-    //  - sharing cost = 4
-    //    - cost for 1@byte = 80
-    //    - cost for 2@byte = 84
-    //    - cost for 3@byte = 88
-    //    - cost for 1@short = 96
-    //    - cost for 2@short = 100
-    //    - cost for 3@short = 104
-    //    - cost for 1@int = 128
-    //    - cost for 2@int = 132
-    //    - cost for 3@int = 136
-    //  - 4-byte pointer-to-Node
-    //    - 16-byte Node-header
-    //    - 4-byte pointer-to-parentId
-    //      - 16-byte Object-header
-    //    - 4-byte pointer-to-children
-    //      - 16-byte array-header
-    //      - 4-byte length
-    //      - children-elements
-    // flat sizes with parentId:
-    //  - total/each = 44 + children-elements
-    //  - sharing cost = 8
-    //    - cost for 1@byte = 60
-    //    - cost for 2@byte = 68 -- best
-    //    - cost for 3@byte = 76 -- best
-    //    - cost for 1@short = 76
-    //    - cost for 2@short = 84 -- best
-    //    - cost for 3@short = 92 -- best
-    //    - cost for 1@int = 108
-    //    - cost for 2@int = 116 -- best
-    //    - cost for 3@int = 124 -- best
-    //  - 4-byte pointer-to-parentId
-    //    - 16-byte Object-header
-    //  - 4-byte pointer-to-children
-    //    - 16-byte array-header
-    //    - 4-byte length
-    //    - children-elements
-    // flat sizes without parentId:
-    //  - total/each = 24 + children-elements
-    //  - no sharing
-    //    - cost for 1@byte = 40 -- best
-    //    - cost for 2@byte = 80
-    //    - cost for 3@byte = 120
-    //    - cost for 1@short = 56 -- best
-    //    - cost for 2@short = 112
-    //    - cost for 3@short = 168
-    //    - cost for 1@int = 88 -- best
-    //    - cost for 2@int = 176
-    //    - cost for 3@int = 264
-    //  - 4-byte pointer-to-children
-    //    - 16-byte array-header
-    //    - 4-byte length
-    //    - children-elements
-    //
-    // Sharing only saves when children are updated (added/removed mutates sizes, so cannot share)
-    
-    // current structure:
-    //  - 16-byte Node header
-    //  - 4-byte children pointer
-    //    - 16-byte array header
-    //    - 4-byte length
-    //    - (4-256)-byte children pointers (1-64 4-byte pointers)
-    //  - (2-8)-byte children ownership bitset (supports 16-64 children)
-    //  - (circumstantial) 4-byte size table pointer
-    //    - 16-byte array header
-    //    - 4-byte length
-    //    - (1-256)-byte sizes (1-64 (1-4)-byte sizes)
-    //  - (maybe) (2-8)-byte children size tables ownership bitset (supports 16-64 children)
-    //    - can't know whether children even have size tables to own
-    
-    // An alternative "pure Object[]" structure:
-    //  - 16-byte array header
-    //  - 4-byte length
-    //  - (4-256)-bytes pointers to children (1-64 4-byte pointers)
-    //  - (circumstantial) 4-byte pointer to ownership bitset
-    //    - 16-byte Object header
-    //    - (2-8)-byte value (supports 16-64 children)
-    //  - (circumstantial) 4-byte pointer to size table
-    //    - 16-byte array header
-    //    - 4-byte length
-    //    - (1-256)-bytes sizes (1-64 (1-4)-byte sizes)
-    //
-    // This appears to take up the same amount of space - just swapping whether children or bitset is nested.
-    // Since the number of children may vary, it's not clear how we would distinguish the size table pointer from a child.
-    
-    // If I am sized, all of my ancestors are sized, but my progeny may not be
-    // If I am not sized, none of my progeny are sized
 }
