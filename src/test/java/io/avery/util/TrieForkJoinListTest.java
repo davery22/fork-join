@@ -1434,13 +1434,13 @@ class TrieForkJoinListTest {
         }
         
         @Override
-        public boolean join(Collection<? extends E> other) {
-            return base.addAll(other);
+        public boolean join(Collection<? extends E> c) {
+            return base.addAll(c);
         }
         
         @Override
-        public boolean join(int index, Collection<? extends E> other) {
-            return base.addAll(index, other);
+        public boolean join(int index, Collection<? extends E> c) {
+            return base.addAll(index, c);
         }
         
         @Override

@@ -2099,13 +2099,13 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     }
     
     @Override
-    public boolean join(Collection<? extends E> other) {
+    public boolean join(Collection<? extends E> c) {
         // TODO: Update if we add ForkJoinCollection superinterface
-        if (!(other instanceof ForkJoinList<? extends E> fjl)) {
-            return addAll(other);
+        if (!(c instanceof ForkJoinList<? extends E> fjl)) {
+            return addAll(c);
         }
-        if (!((other = fjl.fork()) instanceof TrieForkJoinList<? extends E> right)) {
-            return addAll(other);
+        if (!((c = fjl.fork()) instanceof TrieForkJoinList<? extends E> right)) {
+            return addAll(c);
         }
         if (right.isEmpty()) {
             return false;
@@ -2545,19 +2545,19 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     }
     
     @Override
-    public boolean join(int index, Collection<? extends E> other) {
+    public boolean join(int index, Collection<? extends E> c) {
         if (index == size) {
             // This case is always hit if size == 0 and index is in bounds,
             // thus there is no isEmpty() case below.
-            return join(other);
+            return join(c);
         }
         rangeCheckForAdd(index);
         // TODO: Update if we add ForkJoinCollection superinterface
-        if (!(other instanceof ForkJoinList<? extends E> fjl)) {
-            return addAll(index, other);
+        if (!(c instanceof ForkJoinList<? extends E> fjl)) {
+            return addAll(index, c);
         }
-        if (!((other = fjl.fork()) instanceof TrieForkJoinList<? extends E> right)) {
-            return addAll(index, other);
+        if (!((c = fjl.fork()) instanceof TrieForkJoinList<? extends E> right)) {
+            return addAll(index, c);
         }
         if (right.isEmpty()) {
             return false;
