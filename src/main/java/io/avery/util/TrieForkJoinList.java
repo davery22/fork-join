@@ -74,10 +74,12 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
      *     outside the sublist fork. Tracking ownership on the parent instead of on each child reduces data fetches, and
      *     allows for bitwise operations to bulk-update ownership when many children are moved, as during concatenation.
      *     For a branching factor of 32, each bitset takes up the same space as a 4-byte pointer to a list id would.
-     *  3. This variant compresses size tables at lower levels in the tree, taking advantage of the lower maximum
+     *  3. This variant does not use a planning phase during concatenation. This can lead to redundant copying in some
+     *     cases, but does not appear to be a bottleneck. In general, we try to postpone copying in order to fuse with
+     *     other operations, within "reason" (depending on your tolerance for code sprawl / complexity).
+     *  4. This variant compresses size tables at lower levels in the tree, taking advantage of the lower maximum
      *     cumulative size to use narrower primitive types (e.g. byte or char instead of int).
-     *  4. This variant attempts to avoid or even eliminate existing size tables during operations like concatenation.
-     *  5. This variant does not use a planning phase during concatenation.
+     *  5. This variant attempts to avoid or even eliminate existing size tables during operations like concatenation.
      */
     
     // If changed, ParentNode.owns (and operations on it) must be updated to use a type of the appropriate width
@@ -2051,6 +2053,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     
     private record SplitResult(Node leftRoot, Node rightRoot, int leftRootShift, int rightRootShift) {}
     
+    // Forks a left and right split around the range, while retaining ownership of both sides (unlike 'fork' method).
     // Somewhat unconventionally, the 'removed' range is exclusive of both fromIndex and toIndex.
     // Said differently: fromIndex is the last index of the left split; toIndex is the first index of the right split.
     private static SplitResult splitAroundRange(int fromIndex, int toIndex, Node root, int shift) {
@@ -2371,8 +2374,16 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     }
     
     private static void rebalance(Node[] nodes, int shift, boolean isRightmost, boolean isRightFirstChildEmpty) {
-        // Assume left and right are editable
+        // On fixing-up left/right at the end of rebalance:
+        //
+        // If we need to visit both sides anyway, shift all left - it doesn't add work and MIGHT save revisiting left in higher rebalancing
+        // Else if we can empty right into left, do - it doesn't add work (still only "visiting" one side b.c. right = EMPTY after) and MIGHT prevent higher rebalancing
+        // Else, only visit the one side - we MIGHT need to revisit in higher rebalancing, but we still would if we shifted all left
+        //
+        // "shift all left" is only suboptimal if we only changed one side AND DID NOT need higher rebalancing
+        // "shift to empty" is only suboptimal if we changed both sides AND could not empty AND DID need higher rebalancing
         
+        // Assume left and right are editable
         ParentNode left = (ParentNode) nodes[0], right = (ParentNode) nodes[1];
         
         if (right == EMPTY_NODE || (isRightFirstChildEmpty && right.children.length == 1)) {
@@ -2543,15 +2554,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             }
         }
     }
-    
-    // Fixing-up left/right at the end of rebalance:
-    //
-    // If we need to visit both sides anyway, shift all left - it doesn't add work and MIGHT save revisiting left in higher rebalancing
-    // Else if we can empty right into left, do - it doesn't add work (still only "visiting" one side b.c. right = EMPTY after) and MIGHT prevent higher rebalancing
-    // Else, only visit the one side - we MIGHT need to revisit in higher rebalancing, but we still would if we shifted all left
-    //
-    // "shift all left" is only suboptimal if we only changed one side AND DID NOT need higher rebalancing
-    // "shift to empty" is only suboptimal if we changed both sides AND could not empty AND DID need higher rebalancing
     
     private static int sizeSubTree(Node node, int shift) {
         int size = 0;
