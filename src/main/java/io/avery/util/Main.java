@@ -22,20 +22,17 @@ public class Main {
     //
     // directAppend is justified by being at least as good as forkPrefix + appends (push-down tail)
     
-    // TODO: Where we are calling concatSubTree, can this result in a non-full rightmost leaf?
-    //  - Seemingly not in join(), assuming both sides start with a full rightmost leaf
-    
     public static void main(String[] args) {
         zigZagAddBench();
     }
     
     static void zigZagAddBench() {
-        int size = 1000_000;
+        int size = 10;
         int sum = 0;
-        for (int i = 0; i < 1_00; i++) {
+        for (int i = 0; i < 10_000_000; i++) {
 //            List<Integer> list = new LinkedList<>();
-//            List<Integer> list = new ArrayList<>(); // ~24 sec @size=1k,i=100k
-            List<Integer> list = new TrieForkJoinList<>(); // ~96 sec
+            List<Integer> list = new ArrayList<>(); // ~24 sec @size=1k,i=100k
+//            List<Integer> list = new TrieForkJoinList<>(); // ~96 sec
             zigZagAdd(list, size);
             sum += list.size();
         }

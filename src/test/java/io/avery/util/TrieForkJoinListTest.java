@@ -678,9 +678,9 @@ class TrieForkJoinListTest {
     static List<Integer> removeAtIndex3(Factory factory) {
         // Remove all by popping off the end
         // First construct a list with a deep narrow root, to hit special handling as we promote new tails
-        int pow2 = SPAN*SPAN;
-        ForkJoinList<Integer> list = listOfSize(factory, SPAN*pow2)
-            .subList(SPAN*(pow2-1)/2, SPAN*(pow2+3)/2)
+        int size = SPAN*SPAN*SPAN;
+        ForkJoinList<Integer> list = listOfSize(factory, size)
+            .subList((size - SPAN)/2, (size + 3*SPAN)/2)
             .fork();
         List<Integer> result = new ArrayList<>();
         while (!list.isEmpty()) {

@@ -5,8 +5,60 @@ import java.util.*;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 
+/**
+ * A {@code ForkJoinList} based on a Relaxed Radix Balanced Trie. Implements all optional list operations, and permits
+ * all elements, including {@code null}.
+ *
+ * <p>Forking a list takes approximately constant time and space (O(1)), while forking a subList takes approximately
+ * logarithmic time and space (O(logN)). Subsequent updates to the original list or the fork will initially copy regions
+ * of shared internal structure if needed to ensure no interference between the lists. That is, forking achieves its
+ * sublinear cost by deferring copying to later writes (incrementally and as needed).
+ *
+ * <p>Joining a {@code TrieForkJoinList} (or its subList) to a {@code TrieForkJoinList} (or its subList) takes
+ * approximately logarithmic time and space, including the cost of forking the argument.
+ *
+ * <p>Additionally, adding or removing one element at an index, or clearing a subList, all take approximately
+ * logarithmic time and space. Accesses throughout the list take approximately logarithmic time.
+ * Accesses, additions, and removals at the last position in the list take approximately constant time.
+ *
+ * <p>The notion of "structural modification" is extended on a {@code TrieForkJoinList}:
+ * In addition to operations that add or delete elements, it also encompasses
+ * <strong>operations that set the value of an element that is currently shared with another fork</strong>.
+ *
+ * <p><strong>Note that this implementation is not synchronized.</strong>
+ * If multiple threads access a {@code TrieForkJoinList} instance concurrently, and at least
+ * one of the threads modifies the list structurally, it <i>must</i> be
+ * synchronized externally. This is typically accomplished by synchronizing on some object
+ * that naturally encapsulates the list.
+ *
+ * If no such object exists, the list should be "wrapped" using the
+ * {@link Collections#synchronizedList Collections.synchronizedList}
+ * method.  This is best done at creation time, to prevent accidental
+ * unsynchronized access to the list:<pre>
+ *   List list = Collections.synchronizedList(new TrieForkJoinList(...));</pre>
+ *
+ * <p>The iterators returned by this class's {@code iterator} and
+ * {@code listIterator} methods are <i>fail-fast</i>: if the list is
+ * structurally modified at any time after the iterator is created, in
+ * any way except through the Iterator's own {@code remove},
+ * {@code add}, or {@code set} methods, the iterator will throw a {@link
+ * ConcurrentModificationException}.  Thus, in the face of concurrent
+ * modification, the iterator fails quickly and cleanly, rather than
+ * risking arbitrary, non-deterministic behavior at an undetermined
+ * time in the future.
+ *
+ * <p>Note that the fail-fast behavior of an iterator cannot be guaranteed
+ * as it is, generally speaking, impossible to make any hard guarantees in the
+ * presence of unsynchronized concurrent modification.  Fail-fast iterators
+ * throw {@code ConcurrentModificationException} on a best-effort basis.
+ * Therefore, it would be wrong to write a program that depended on this
+ * exception for its correctness:   <i>the fail-fast behavior of iterators
+ * should be used only to detect bugs.</i>
+ *
+ * @param <E> the type of elements in this list
+ */
 public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList<E>, RandomAccess {
-    /* Implements a variant of Relaxed Radix Balanced (RRB) Tree, a data structure proposed by Bagwell & Rompf
+    /* Implements a variant of Relaxed Radix Balanced (RRB) Trie, a data structure proposed by Bagwell & Rompf
      * [https://infoscience.epfl.ch/server/api/core/bitstreams/e5d662ea-1e8d-4dda-b917-8cbb8bb40bf9/content]
      * and further elaborated by L'orange [https://hypirion.com/thesis.pdf].
      *
@@ -26,7 +78,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
      *     cumulative size to use narrower primitive types (e.g. byte or char instead of int).
      *  4. This variant attempts to avoid or even eliminate existing size tables during operations like concatenation.
      *  5. This variant does not use a planning phase during concatenation.
-     *  6. This variant typically mutates nodes in-place when they are owned, rather than replacing with new nodes.
      */
     
     // If changed, ParentNode.owns (and operations on it) must be updated to use a type of the appropriate width
@@ -135,16 +186,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         root = toCopy.root;
         tail = toCopy.tail;
     }
-    
-    
-    // TODO: Verify that everything in the reversed() List makes sense / is fairly optimal.
-    
-    // Pros of custom iterator:
-    //  - faster iteration - no need to traverse down on each advance
-    //  - faster set - no need to traverse down each time
-    // Cons of custom iterator:
-    //  - iterator has more state + retains a strong reference to root (even after external co-mod), preventing GC
-    
     
     @Override
     public boolean equals(Object o) {
@@ -2321,21 +2362,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
     }
     
-    // Should we combine left/right Nodes at the end of rebalance?
-    //  - This will happen anyway at the next level up if needed - except for at the roots
-    //  - This isn't necessary to maintain the invariant, but is done by both Bagwell/Rompf and L'orange
-    
-    // The margin seems badly-behaved near the top of the tree...
-    // Example: We may find that at the roots, minLength = 1, and we have 2, so we don't rebalance,
-    //          But then we need to add a new root at the top of the tree, increasing the height.
-    
-    // We can constrain the total number of extra steps (not just per level) by starting with margin = MARGIN at the
-    // bottom, and deducting any overage from margin, thus further constraining higher levels
-    
-    // The main disadvantage with the search-step invariant (as opposed to the min-span invariant) is that it is easier
-    // for the tree to increase in height, because the search-step invariant is more lenient on how wasted space can be
-    // distributed, which makes it easier to accumulate more of it.
-    
     static int countGrandchildren(Node node) {
         int count = 0;
         for (Object child : node.children) {
@@ -2360,17 +2386,10 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         Object[] leftChildren = left.children;
         Object[] rightChildren = right.children;
         int totalNodes = countGrandchildren(left) + countGrandchildren(right);
-//        int totalNodes = 0;
-//        for (Object child : leftChildren) {
-//            totalNodes += ((Node) child).children.length;
-//        }
-//        for (Object child : rightChildren) {
-//            totalNodes += ((Node) child).children.length;
-//        }
-        
         int minLength = 1 + ((totalNodes-1) >>> SHIFT);
         int maxLength = minLength + MARGIN;
         int curLength = leftChildren.length + rightChildren.length;
+        
         if (curLength <= maxLength) {
             // Yay, no rebalancing needed
             // But we do still have some work to refresh left/right if their rightmost/leftmost child changed
@@ -3163,7 +3182,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 Object[] newChildren = Arrays.copyOf(children, to);
                 if (isOwned) {
                     children = newChildren;
-                    owns |= ~mask(oldLen); // Take ownership of new slots if len > oldLen (trailing ownership is ignored)
+                    owns |= ~mask(oldLen); // Take ownership of new slots if to > oldLen (trailing ownership is ignored)
                     return this;
                 }
                 return new ParentNode(~mask(oldLen), newChildren);
@@ -3474,7 +3493,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                 Sizes newSizes = sizes().copyRange(0, to);
                 if (isOwned) {
                     children = newChildren;
-                    owns |= ~mask(oldLen); // Take ownership of new slots if len > oldLen (trailing ownership is ignored)
+                    owns |= ~mask(oldLen); // Take ownership of new slots if to > oldLen (trailing ownership is ignored)
                     sizes = newSizes;
                     return this;
                 }
@@ -3697,7 +3716,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             return new Sizes.OfInt(new int[len]);
         }
         
-        // Only used if SHIFT <= 4 (SPAN <= 16)
+        // OfByte is only used if SHIFT <= 4 (SPAN <= 16)
         final class OfByte implements Sizes {
             byte[] sizes;
             public OfByte(byte[] sizes) { this.sizes = sizes; }
