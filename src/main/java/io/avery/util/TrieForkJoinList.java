@@ -2272,7 +2272,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         
         int leftLen = left.children.length, rightLen = right.children.length;
-        if (leftLen + rightLen <= SPAN) { // TODO: || isRightmost ?
+        if (leftLen + rightLen <= SPAN) { // TODO: || isRightmost, to potentially avoid becoming Sized?
             // Right fits in left - copy it over
             Object[] newChildren = Arrays.copyOf(left.children, leftLen + rightLen);
             System.arraycopy(right.children, 0, newChildren, leftLen, rightLen);
@@ -2418,7 +2418,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                     nodes[0] = left.refreshSizesIfRightmostChildChanged(false, shift);
                 }
             }
-            else if (leftChildren.length + rightChildren.length <= SPAN) { // TODO: || isRightmost ?
+            else if (leftChildren.length + rightChildren.length <= SPAN) { // TODO: || isRightmost, to potentially avoid becoming Sized?
                 // Right fits in left
                 left.shiftChildren(0, 0, rightChildren.length, right, 0);
                 nodes[0] = left.refreshSizes(isRightmost, shift);
@@ -2508,7 +2508,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         
         if (rightDeathRow == 0) { // Did not update right - must have updated left only (and leftDeathRow != 0)
             int remainingLeft = leftChildren.length - Long.bitCount(leftDeathRow);
-            if (remainingLeft + rightChildren.length <= SPAN) { // TODO: || isRightmost ?
+            if (remainingLeft + rightChildren.length <= SPAN) { // TODO: || isRightmost, to potentially avoid becoming Sized?
                 // Removing some from left makes right fit in
                 left.shiftChildren(leftDeathRow, 0, rightChildren.length, right, 0);
                 nodes[0] = left.refreshSizes(isRightmost, shift);
@@ -2523,7 +2523,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         else if (!updatedLeft) { // Updated right only
             int remainingRight = rightChildren.length - Long.bitCount(rightDeathRow);
-            if (leftChildren.length + remainingRight <= SPAN) { // TODO: || isRightmost ?
+            if (leftChildren.length + remainingRight <= SPAN) { // TODO: || isRightmost, to potentially avoid becoming Sized?
                 // Removing some from right makes it fit in left
                 left.shiftChildren(0, 0, remainingRight, right, rightDeathRow);
                 nodes[0] = left.refreshSizes(isRightmost, shift);
@@ -3156,16 +3156,14 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             owns &= mask(from) | ~mask(to);
         }
         
-        static int skipOwnership(int owns, int skip, int keep) {
-            return (int) ((owns >>> skip) & mask(keep));
+        // Copies 'take' bits past position 'shift' in owns, shifted to the beginning
+        static int takeOwnershipL2R(int owns, int shift, int take) {
+            return (int) ((owns >>> shift) & mask(take));
         }
         
-        static int takeOwnership(int keep, int take, int owns) {
-            return (int) ((owns & mask(take)) << keep);
-        }
-        
-        static int removeFromOwnership(int owns, int index, int count) {
-            return (int) ((owns & mask(index)) | ((owns >>> count) & ~mask(index)));
+        // Copies 'take' bits past the beginning of owns, shifted to position 'shift'
+        static int takeOwnershipR2L(int owns, int shift, int take) {
+            return (int) ((owns & mask(take)) << shift);
         }
         
         static int mask(int shift) {
@@ -3286,7 +3284,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             System.arraycopy(from.children, 0, newChildren, keep, take);
             
             // Handle ownership
-            var newOwns = (int) ((isOwned ? skipOwnership(owns, skip, keep) : 0) | (isFromOwned ? takeOwnership(keep, take, ((ParentNode) from).owns) : 0));
+            var newOwns = (int) ((isOwned ? takeOwnershipL2R(owns, skip, keep) : 0) | (isFromOwned ? takeOwnershipR2L(((ParentNode) from).owns, keep, take) : 0));
             if (newSizes != null) {
                 return new SizedParentNode(newOwns, newChildren, newSizes);
             }
@@ -3306,29 +3304,28 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             
             // Remove deleted children
             int newLen;
-            var newOwns = owns;
+            int newOwns = 0;
             Object[] newChildren;
             if (deathRow != 0) {
+                var oldOwns = owns;
                 Object[] oldChildren = children;
                 int i = 0, j = 0, len = oldChildren.length, toRemove = Long.bitCount(deathRow);
                 newLen = len - skip - toRemove + take;
                 newChildren = newLen == len ? oldChildren : new Object[newLen];
                 for (; deathRow != 0; i++) {
                     if (deathRow == (deathRow &= ~(1L << i)) && skip-- <= 0) {
+                        newOwns |= oldOwns & (1 << i);
                         newChildren[j++] = oldChildren[i];
                     }
-                    else {
-                        newOwns = removeFromOwnership(newOwns, i, 1);
-                    }
                 }
-                skip = Math.max(skip, 0);
-                System.arraycopy(oldChildren, i + skip, newChildren, j, len - i - skip);
-                newOwns = removeFromOwnership(newOwns, i, skip);
+                i += Math.max(skip, 0);
+                System.arraycopy(oldChildren, i, newChildren, j, len - i);
+                newOwns |= takeOwnershipL2R(oldOwns, i, len - i) << j;
             }
             else if (skip != take) {
                 newLen = children.length - skip + take;
                 newChildren = Arrays.copyOfRange(children, skip, newLen);
-                newOwns = skipOwnership(newOwns, skip, newLen - take);
+                newOwns = takeOwnershipL2R(owns, skip, newLen - take);
             }
             else { // deathRow == skip == take == 0; nothing to do
                 return;
@@ -3346,10 +3343,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
                     }
                 }
                 System.arraycopy(fromChildren, i, newChildren, j, newLen - j);
-                newOwns |= takeOwnership(j, newLen - j, fromOwns >>> i);
+                newOwns |= takeOwnershipR2L(fromOwns >>> i, j, newLen - j);
             }
-            
-            // TODO: newOwns |= takeOwnership... problem with trailing/previously-ignored bits of newOwns already being 1?
             
             owns = newOwns;
             children = newChildren;
@@ -3584,7 +3579,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
             System.arraycopy(from.children, 0, newChildren, keep, take);
             
             // Handle ownership
-            var newOwns = (int) ((isOwned ? skipOwnership(owns, skip, keep) : 0) | (isFromOwned ? takeOwnership(keep, take, ((ParentNode) from).owns) : 0));
+            var newOwns = (int) ((isOwned ? takeOwnershipL2R(owns, skip, keep) : 0) | (isFromOwned ? takeOwnershipR2L(((ParentNode) from).owns, keep, take) : 0));
             if (newSizes == null) {
                 return new ParentNode(newOwns, newChildren);
             }
