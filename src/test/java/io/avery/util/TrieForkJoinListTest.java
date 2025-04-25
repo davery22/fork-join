@@ -148,7 +148,8 @@ class TrieForkJoinListTest {
             argumentSet("spliterator3", id(TrieForkJoinListTest::spliterator3)),
             argumentSet("spliterator4", id(TrieForkJoinListTest::spliterator4)),
             argumentSet("spliterator5", id(TrieForkJoinListTest::spliterator5)),
-            argumentSet("subListSpliterator1", id(TrieForkJoinListTest::subListSpliterator1))
+            argumentSet("subListSpliterator1", id(TrieForkJoinListTest::subListSpliterator1)),
+            argumentSet("safeSizedHandling1", id(TrieForkJoinListTest::safeSizedHandling1))
         );
 //        ),
 //        IntStream.rangeClosed(1, 100)
@@ -1208,6 +1209,30 @@ class TrieForkJoinListTest {
     static int hashCode2(Factory factory) {
         // Populated list hashCode
         return listOfSize(factory, 1000).hashCode();
+    }
+    
+    static Object safeSizedHandling1(Factory factory) {
+        // This is a fairly brittle test, in the sense that several seemingly innocuous changes to
+        // the implementation can mask the issue we are trying to express without actually fixing it.
+        // For now, the steps to reproduce look like:
+        //   1. Create a list with a gap, inducing sized nodes
+        //   2. Fill the gap in such a way that the implementation does not replace the (now-full) sized nodes with not-sized nodes
+        //   3. Induce a concatenation that will replace the parent of a (full) sized node with a not-sized node(!)
+        //   4. Attempt to access an element under the (full) sized node, causing IOOBE due to index mismanagement
+        // Possible non-fixes include:
+        //   A. In (2), implementation replaces full sized nodes with not-sized nodes in test case, but may not in other cases
+        //   B. In (3), implementation does not replace the parent with a not-sized node in test case, but may in other cases
+        // Possible fixes include:
+        //   A. In (2), ensure the implementation always replaces full sized nodes with not-sized nodes
+        //   B. In (4), when traversing to an index, ensure index is adjusted to handle sized nodes below not-sized nodes
+        
+        int size = SPAN*SPAN*SPAN;
+        ForkJoinList<Integer> list = listOfSize(factory, size);
+        List<Integer> toInsert = IntStream.range(0, SPAN).boxed().toList();
+        list.remove(size/4); // Add gap to induce sized parent/grandparent nodes
+        list.listIterator(size/4).add(7); // Remove gap, possibly without converting nodes back to not-sized
+        list.addAll(size - 2*SPAN, toInsert); // Induce concatenation that makes grandparent not-sized
+        return list.get(size/4); // Attempt to access element through not-sized -> sized path, possibly triggering IOOBE
     }
     
     @Test
