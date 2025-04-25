@@ -1,4 +1,4 @@
-package io.avery.util;
+package io.avery.util.forkjoin;
 
 import java.time.Duration;
 import java.time.Instant;

@@ -1,4 +1,4 @@
-package io.avery.util;
+package io.avery.util.forkjoin;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
