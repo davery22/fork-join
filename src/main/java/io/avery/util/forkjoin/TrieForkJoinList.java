@@ -1,3 +1,27 @@
+/*
+ * MIT License
+ *
+ * Copyright (c) 2025 Daniel Avery
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
 package io.avery.util.forkjoin;
 
 import java.lang.reflect.Array;
@@ -90,6 +114,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     static final int MASK = SPAN-1;
     static final int MARGIN = 2;
     static final int DO_NOT_REDISTRIBUTE = SPAN - MARGIN/2; // During rebalance(), a node with size >= threshold is not redistributed
+    static final ParentNode EMPTY_NODE = new ParentNode(new Object[0]);
     static final Node INITIAL_TAIL = new Node(new Object[SPAN]);
     static final Object INITIAL_FORK_ID = new Object();
     
@@ -2246,8 +2271,6 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         }
         return (len << shift); // Actual sizes cannot exceed Integer.MAX_VALUE, so no need to protect shift
     }
-    
-    private static final ParentNode EMPTY_NODE = new ParentNode(new Object[0]);
     
     // Updates root, rootShift at the end
     // - Important! The total size under both nodes is expected to equal (size - tailSize)

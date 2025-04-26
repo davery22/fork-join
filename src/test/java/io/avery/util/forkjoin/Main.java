@@ -1,3 +1,27 @@
+/*
+ * MIT License
+ *
+ * Copyright (c) 2025 Daniel Avery
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
 package io.avery.util.forkjoin;
 
 import java.time.Duration;
@@ -6,22 +30,6 @@ import java.util.*;
 import java.util.stream.IntStream;
 
 public class Main {
-    // TODO: Difference between add(i,e) with directAppend vs concat, esp. when leaf is full but ancestors are not?
-    //  Depends which condition is hit first:
-    //  1. If a right-edge node is not full, then we empty new single-child right sibling into it.
-    //     - This matches the behavior of directAppend
-    //  2. If a right-edge node is full, but its left siblings are not, such that the new single-child right sibling
-    //     triggers a rebalance (at the parent level) - then we shift children left, eliminating at least one sibling,
-    //     which ensures room for the new right sibling in the parent.
-    //     - This effect is not replicated by directAppend
-    //     - If we are (bulk) appending the right number of elements, or sufficiently many elements (such that new right
-    //       siblings are full), then the rebalance condition would not have triggered anyway.
-    //     - Else we may miss out on rebalancing left, and subsequent concatenation may not rectify the scarcity of the
-    //       the new right sibling(s) children (that would have triggered the missed rebalance).
-    //     - *Iterator.add seems to behave similarly, minus the right-side concatenation 'afterward'.
-    //
-    // directAppend is justified by being at least as good as forkPrefix + appends (push-down tail)
-    
     public static void main(String[] args) {
         zigZagAddBench();
     }
