@@ -27,11 +27,32 @@ package io.avery.util.forkjoin;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
+import java.util.function.Function;
+import java.util.stream.Collector;
 import java.util.stream.IntStream;
 
 public class Main {
     public static void main(String[] args) {
-        zigZagAddBench();
+        streamsBench();
+    }
+    
+    static void streamsBench() {
+        var collector = Collector.of(
+            TrieForkJoinList::new,
+            List::add,
+            (a, b) -> { a.join(b); return a; },
+            Function.identity()
+        );
+        int size = 10_000_000;
+        int sum = 0;
+        for (int i = 0; i < 500; i++) {
+            var list = IntStream.range(0, size).boxed().parallel()
+                .filter(j -> j % 1001 != 0)
+//                .collect(collector);
+                .toList();
+            sum += list.size();
+        }
+        System.out.println(sum);
     }
     
     static void zigZagAddBench() {

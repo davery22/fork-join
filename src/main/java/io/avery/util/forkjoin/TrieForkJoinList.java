@@ -82,29 +82,6 @@ import java.util.function.Predicate;
  * @param <E> the type of elements in this list
  */
 public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList<E>, RandomAccess {
-    /* Implements a variant of Relaxed Radix Balanced (RRB) Trie, a data structure proposed by Bagwell & Rompf
-     * [https://infoscience.epfl.ch/server/api/core/bitstreams/e5d662ea-1e8d-4dda-b917-8cbb8bb40bf9/content]
-     * and further elaborated by L'orange [https://hypirion.com/thesis.pdf].
-     *
-     * Notable features of this variant:
-     *  1. Rather than forcing update operations to return a new instance (copy + mutate, as in "persistent" data
-     *     structures), this variant separates a copy operation (fork) from mutative operations, allowing it to
-     *     adhere to the java.util.List interface. The copy operation is O(1) (when copying a full list), or O(logN)
-     *     (when copying a sublist, aka 'slicing' in the literature).
-     *  2. Rather than having each node reference a list id to determine if it is owned or shared (as in L'orange's
-     *     transient variant), this variant has each node keep a bitset tracking which of its children are owned or
-     *     shared. A node is owned if its parent is owned and its bit is set in its parent's bitset. This finer-grained
-     *     ownership tracking allows a list to share nodes with a sublist fork while retaining ownership of nodes
-     *     outside the sublist fork. Tracking ownership on the parent instead of on each child reduces data fetches, and
-     *     allows for bitwise operations to bulk-update ownership when many children are moved, as during concatenation.
-     *     For a branching factor of 32, each bitset takes up the same space as a 4-byte pointer to a list id would.
-     *  3. This variant does not use a planning phase during concatenation. This can lead to redundant copying in some
-     *     cases, but does not appear to be a bottleneck. In general, we try to postpone copying in order to fuse with
-     *     other operations, within "reason" (depending on your tolerance for code sprawl / complexity).
-     *  4. This variant compresses size tables at lower levels in the tree, taking advantage of the lower maximum
-     *     cumulative size to use narrower primitive types (e.g. byte or char instead of int).
-     *  5. This variant attempts to avoid or even eliminate existing size tables during operations like concatenation.
-     */
     
     // If changed, ParentNode.owns (and operations on it) must be updated to use a type of the appropriate width
     //  - eg: 4 => short, 5 => int, 6 => long
@@ -112,8 +89,8 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
     static final int SHIFT = 5;
     static final int SPAN = 1 << SHIFT;
     static final int MASK = SPAN-1;
-    static final int MARGIN = 2;
-    static final int DO_NOT_REDISTRIBUTE = SPAN - MARGIN/2; // During rebalance(), a node with size >= threshold is not redistributed
+    static final int TOLERANCE = 2;
+    static final int DO_NOT_REDISTRIBUTE = SPAN - TOLERANCE/2; // During rebalance(), a node with size >= threshold is not redistributed
     static final ParentNode EMPTY_NODE = new ParentNode(new Object[0]);
     static final Node INITIAL_TAIL = new Node(new Object[SPAN]);
     static final Object INITIAL_FORK_ID = new Object();
@@ -2426,7 +2403,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         Object[] rightChildren = right.children;
         int totalNodes = countGrandchildren(left) + countGrandchildren(right);
         int minLength = 1 + ((totalNodes-1) >>> SHIFT);
-        int maxLength = minLength + MARGIN;
+        int maxLength = minLength + TOLERANCE;
         int curLength = leftChildren.length + rightChildren.length;
         
         if (curLength <= maxLength) {
