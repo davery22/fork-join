@@ -59,9 +59,9 @@ public interface ForkJoinList<E> extends List<E> {
     /**
      * Returns a shallow copy of this {@code ForkJoinList} instance. (The elements themselves are not copied.)
      *
-     * @implSpec Sublinear implementations will likely use structural sharing to avoid visiting each element when
-     * copying. This must not impact the results of subsequent operations on this list, but may impact the performance
-     * of subsequent modifications to this list.
+     * <p><b>Implementation Requirements:</b> Sublinear implementations will likely use structural sharing to avoid
+     * visiting each element when copying. This must not impact the results of subsequent operations on this list, but
+     * may impact the performance of subsequent modifications to this list.
      *
      * @return a copy of this list
      */

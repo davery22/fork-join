@@ -156,10 +156,18 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         return root = root.copyPrefix(claimRoot(), len);
     }
     
+    /**
+     * Constructs an empty list.
+     */
     public TrieForkJoinList() {
         tail = INITIAL_TAIL;
     }
     
+    /**
+     * Constructs a list containing the elements of the specified collection, in the order they are returned by the collection's iterator.
+     *
+     * @param c the collection whose elements are to be placed into this list
+     */
     public TrieForkJoinList(Collection<? extends E> c) {
         // Basically a tailored version of addAll()
         Object[] arr = c.toArray();
@@ -183,7 +191,7 @@ public class TrieForkJoinList<E> extends AbstractList<E> implements ForkJoinList
         size = numNew;
     }
     
-    protected TrieForkJoinList(TrieForkJoinList<? extends E> toCopy) {
+    private TrieForkJoinList(TrieForkJoinList<? extends E> toCopy) {
         size = toCopy.size;
         tailSize = toCopy.tailSize;
         rootShift = toCopy.rootShift;
