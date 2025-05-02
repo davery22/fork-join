@@ -9,21 +9,21 @@ real potential for non-obvious interactions. There is also a lack of thorough be
 
 ---
 
-If you are not coming from the [blog post](https://daniel.avery.io/writing/fork-join-data-structures), you may want see
-that for a quick introduction - it's a short read.
+If you are not coming from the [blog post](https://daniel.avery.io/writing/fork-join-data-structures), you may want to
+see that for a quick introduction - it's a short read.
 
 ---
 
 ## Adding Fork-Join to your build
 
-Fork-Join's Maven group ID is `io.avery`, and its artifact ID is `util.forkjoin`.
+Fork-Join's Maven group ID is `io.avery`, and its artifact ID is `fork-join`.
 
 To add a dependency on Fork-Join using Maven, use the following:
 
 ```xml
 <dependency>
   <groupId>io.avery</groupId>
-  <artifactid>util.forkjoin</artifactid>
+  <artifactid>fork-join</artifactid>
   <version>0.1</version>
 </dependency>
 ```
@@ -112,7 +112,7 @@ Distinguishing features of TrieForkJoinList:
 
 ## Q&A
 
-I can't promise I have made only good decisions, but I will try to explain my reasoning.
+I can't promise I have made only good decisions, but I can try to explain my reasoning.
 
 ---
 
