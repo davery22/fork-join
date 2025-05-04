@@ -13,6 +13,8 @@ benchmarks
 
 append
 
+Append n elements to an empty list
+
 TrieForkJoinList
 Benchmark                            (n)    Mode      Cnt            Score            Error  Units
 Bench1.benchAppends3                 100  sample  1919685          643.737 ±          6.354  ns/op
@@ -215,6 +217,8 @@ Bench1.benchAppends1:p1.00     100000000  sample            8078229504.000      
 
 prepend
 
+Prepend n elements to an empty list
+
 TrieForkJoinList
 Benchmark                            (n)    Mode      Cnt            Score            Error  Units
 Bench1.benchPrepends3                100  sample  1439156        15711.351 ±         33.179  ns/op
@@ -398,6 +402,12 @@ Bench1.benchPrepends1:p1.00    100000000  sample            8438939648.000      
 ---
 
 bulk append (n + n)
+
+Construct a list from a bootstrap list of size n
+Then append another list of size n, using addAll() or join()
+The bootstrap list is IntStream.range(0, n).boxed().toList() (its creation is excluded from timing)
+The appended list is the same as the bootstrap
+ - Except for join(), where the appended list is new TrieForkJoinList(bootstrap) (its creation is excluded from timing)
 
 TrieForkJoinList (addAll)
 Benchmark                             (n)    Mode      Cnt           Score           Error  Units
@@ -631,6 +641,12 @@ Bench1.benchBulkAppend4:p1.00    10000000  sample           2323644416.000      
 
 bulk prepend (n + n)
 
+Construct a list from a bootstrap list of size n
+Then prepend another list of size n, using addAll() or join()
+The bootstrap list is IntStream.range(0, n).boxed().toList() (its creation is excluded from timing)
+The prepended list is the same as the bootstrap
+ - Except for join(), where the prepended list is new TrieForkJoinList(bootstrap) (its creation is excluded from timing)
+
 TrieForkJoinList (addAll)
 Benchmark                              (n)    Mode      Cnt           Score          Error  Units
 Bench1.benchBulkPrepend1               100  sample  1790800         202.065 ±        7.163  ns/op
@@ -863,6 +879,9 @@ Bench1.benchBulkPrepend4:p1.00    10000000  sample           1212153856.000     
 
 insert n elements into middle
 
+Construct a list from a bootstrap list of size n
+Then insert n elements one-at-a-time at the middle index, using add()
+
 TrieForkJoinList
 Benchmark                         (n)    Mode      Cnt           Score          Error  Units
 Bench1.benchInsert1               100  sample   970832       38675.214 ±       47.695  ns/op
@@ -1009,7 +1028,10 @@ Bench1.benchInsert3:p1.00    100000  sample           13321109504.000           
 
 ---
 
-delete n elements from middle
+delete n/2 elements from middle
+
+Construct a list from a bootstrap list of size n
+Then delete n/2 elements one-at-a-time from the middle index, using remove()
 
 TrieForkJoinList
 Benchmark                         (n)    Mode      Cnt           Score          Error  Units
@@ -1158,6 +1180,12 @@ Bench1.benchDelete3:p1.00    100000  sample            3275751424.000           
 ---
 
 bulk insert n elements into middle
+
+Construct a list from a bootstrap list of size n
+Then insert another list of size n at the middle index, using addAll() or join()
+The bootstrap list is IntStream.range(0, n).boxed().toList() (its creation is excluded from timing)
+The inserted list is the same as the bootstrap
+ - Except for join(), where the inserted list is new TrieForkJoinList(bootstrap) (its creation is excluded from timing)
 
 TrieForkJoinList (addAll)
 Benchmark                             (n)    Mode      Cnt           Score          Error  Units
@@ -1389,7 +1417,10 @@ Bench1.benchBulkInsert4:p1.00    10000000  sample           1514143744.000      
 
 ---
 
-bulk delete n elements from middle
+bulk delete n/2 elements from middle
+
+Construct a list from a bootstrap list of size n
+Then clear the middle two quarters, using subList(n/4, 3*n/4).clear()
 
 TrieForkJoinList
 Benchmark                              (n)    Mode      Cnt           Score           Error  Units
@@ -1593,6 +1624,9 @@ Bench1.benchBulkDelete3:p1.00    100000000  sample           5922357248.000     
 
 for loop over n elements
 
+Iterate over a list of size n (its creation is excluded from timing)
+Iterate using for (var e : list), which desugars to hasNext() and next() on an iterator()
+
 TrieForkJoinList
 Benchmark                      (n)    Mode      Cnt          Score         Error  Units
 Bench1.benchFor                100  sample  2590972        385.145 ±       0.353  ns/op
@@ -1794,6 +1828,9 @@ Bench1.benchFor:p1.00    100000000  sample           227278848.000              
 ---
 
 forEach over n elements
+
+Iterate over a list of size n (its creation is excluded from timing)
+Iterate using forEach()
 
 TrieForkJoinList
 Benchmark                          (n)    Mode      Cnt         Score        Error  Units
@@ -1997,6 +2034,10 @@ Bench1.benchForEach:p1.00    100000000  sample           267911168.000          
 
 replace n elements
 
+Increment n elements by 1 on a list of size n (its creation is excluded from timing)
+Increment using replaceAll(i -> i+1)
+The list is not necessarily recreated between benchmark runs
+
 TrieForkJoinList
 Benchmark                             (n)    Mode      Cnt           Score          Error  Units
 Bench1.benchReplaceAll                100  sample  1596877         675.229 ±        1.126  ns/op
@@ -2190,6 +2231,9 @@ Bench1.benchReplaceAll:p1.00    10000000  sample           545259520.000        
 ---
 
 bulk load n elements
+
+Construct a list from a bootstrap list of size n
+The bootstrap list is IntStream.range(0, n).boxed().toList() (its creation is excluded from timing)
 
 TrieForkJoinList
 Benchmark                           (n)    Mode      Cnt          Score          Error  Units
