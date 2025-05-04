@@ -32,8 +32,8 @@ import java.util.stream.Collector;
 import java.util.stream.IntStream;
 
 public class Main {
-    public static void main(String[] args) {
-        streamsBench();
+    public static void main(String[] args) throws Exception {
+        org.openjdk.jmh.Main.main(args);
     }
     
     static void streamsBench() {
