@@ -1,5 +1,7 @@
 # Fork-Join Data Structures
 
+TL;DR: [Show me the benchmarks.](https://docs.google.com/spreadsheets/d/1M-3Dro8inlQwWgv0WJqWWgXGEzjQrOAnkTCT3NxMQsQ/edit?usp=sharing)
+
 Mutable data structures with cheap copy ("fork") and merge ("join") operations. These operations are so-named in
 reference to the JDK's own fork-join concurrency framework that underpins parallel streams, which these data structures
 were intended to integrate with.

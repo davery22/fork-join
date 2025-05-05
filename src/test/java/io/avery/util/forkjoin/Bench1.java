@@ -6,6 +6,9 @@ import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
+import java.util.stream.Collector;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 @State(Scope.Benchmark)
@@ -140,4 +143,26 @@ public class Bench1 {
 //    public Object benchBulkLoad() {
 //        return new TrieForkJoinList<>(toInsert);
 //    }
+    
+    @Benchmark
+    @BenchmarkMode(value = Mode.SampleTime)
+    public Object benchCollect() {
+        //return toInsert.stream().toList();
+        //return toInsert.stream().parallel().toList();
+        //return toInsert.stream().parallel().filter(i -> true).toList();
+        //return toInsert.stream().collect(Collectors.toList());
+        //return toInsert.stream().parallel().collect(Collectors.toList());
+        //return toInsert.stream().collect(Collectors.toCollection(TrieForkJoinList::new));
+        //return toInsert.stream().parallel().collect(Collectors.toCollection(TrieForkJoinList::new));
+        //return toInsert.stream().parallel().collect(joiningCollector());
+        return toInsert.stream().parallel().filter(i -> true).collect(joiningCollector());
+    }
+    
+    private <T> Collector<T,?,ForkJoinList<T>> joiningCollector() {
+        return Collector.of(
+            TrieForkJoinList::new, List::add,
+            (a, b) -> { a.join(b); return a; },
+            Function.identity()
+        );
+    }
 }

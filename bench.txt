@@ -1624,7 +1624,7 @@ Bench1.benchBulkDelete3:p1.00    100000000  sample           5922357248.000     
 
 for loop over n elements
 
-Iterate over a list of size n (its creation is excluded from timing)
+Iterate and sum over a list of size n (its creation is excluded from timing)
 Iterate using for (var e : list), which desugars to hasNext() and next() on an iterator()
 
 TrieForkJoinList
@@ -1829,7 +1829,7 @@ Bench1.benchFor:p1.00    100000000  sample           227278848.000              
 
 forEach over n elements
 
-Iterate over a list of size n (its creation is excluded from timing)
+Iterate and sum over a list of size n (its creation is excluded from timing)
 Iterate using forEach()
 
 TrieForkJoinList
@@ -2433,3 +2433,603 @@ Bench1.benchBulkLoad:p0.999   100000000  sample           5150605312.000        
 Bench1.benchBulkLoad:p0.9999  100000000  sample           5150605312.000                  ns/op
 Bench1.benchBulkLoad:p1.00    100000000  sample           5150605312.000                  ns/op
 
+---
+
+collect
+
+Collect a bootstrap list of size n into a new list
+The bootstrap list is IntStream.range(0, n).boxed().toList() (its creation is excluded from timing)
+
+toInsert.stream().toList()
+Benchmark                          (n)    Mode      Cnt          Score          Error  Units
+Bench1.benchCollect                100  sample  2439451        251.834 ±        1.948  ns/op
+Bench1.benchCollect:p0.00          100  sample                  42.000                 ns/op
+Bench1.benchCollect:p0.50          100  sample                 250.000                 ns/op
+Bench1.benchCollect:p0.90          100  sample                 250.000                 ns/op
+Bench1.benchCollect:p0.95          100  sample                 292.000                 ns/op
+Bench1.benchCollect:p0.99          100  sample                 333.000                 ns/op
+Bench1.benchCollect:p0.999         100  sample                1374.000                 ns/op
+Bench1.benchCollect:p0.9999        100  sample               10416.000                 ns/op
+Bench1.benchCollect:p1.00          100  sample              699392.000                 ns/op
+Bench1.benchCollect               1000  sample  2130735       2218.786 ±        7.064  ns/op
+Bench1.benchCollect:p0.00         1000  sample                2000.000                 ns/op
+Bench1.benchCollect:p0.50         1000  sample                2164.000                 ns/op
+Bench1.benchCollect:p0.90         1000  sample                2208.000                 ns/op
+Bench1.benchCollect:p0.95         1000  sample                2292.000                 ns/op
+Bench1.benchCollect:p0.99         1000  sample                2832.000                 ns/op
+Bench1.benchCollect:p0.999        1000  sample               10540.672                 ns/op
+Bench1.benchCollect:p0.9999       1000  sample               20349.645                 ns/op
+Bench1.benchCollect:p1.00         1000  sample              821248.000                 ns/op
+Bench1.benchCollect              10000  sample  1688816      22260.822 ±       49.211  ns/op
+Bench1.benchCollect:p0.00        10000  sample               20992.000                 ns/op
+Bench1.benchCollect:p0.50        10000  sample               21600.000                 ns/op
+Bench1.benchCollect:p0.90        10000  sample               22720.000                 ns/op
+Bench1.benchCollect:p0.95        10000  sample               24704.000                 ns/op
+Bench1.benchCollect:p0.99        10000  sample               29472.000                 ns/op
+Bench1.benchCollect:p0.999       10000  sample               50240.000                 ns/op
+Bench1.benchCollect:p0.9999      10000  sample              652409.139                 ns/op
+Bench1.benchCollect:p1.00        10000  sample            14123008.000                 ns/op
+Bench1.benchCollect             100000  sample   332470     225613.050 ±      180.877  ns/op
+Bench1.benchCollect:p0.00       100000  sample              211200.000                 ns/op
+Bench1.benchCollect:p0.50       100000  sample              220416.000                 ns/op
+Bench1.benchCollect:p0.90       100000  sample              235776.000                 ns/op
+Bench1.benchCollect:p0.95       100000  sample              245504.000                 ns/op
+Bench1.benchCollect:p0.99       100000  sample              267776.000                 ns/op
+Bench1.benchCollect:p0.999      100000  sample              759808.000                 ns/op
+Bench1.benchCollect:p0.9999     100000  sample             1145867.878                 ns/op
+Bench1.benchCollect:p1.00       100000  sample             3248128.000                 ns/op
+Bench1.benchCollect            1000000  sample    18909    3967954.565 ±    54663.684  ns/op
+Bench1.benchCollect:p0.00      1000000  sample             2265088.000                 ns/op
+Bench1.benchCollect:p0.50      1000000  sample             4112384.000                 ns/op
+Bench1.benchCollect:p0.90      1000000  sample             4464640.000                 ns/op
+Bench1.benchCollect:p0.95      1000000  sample             4612096.000                 ns/op
+Bench1.benchCollect:p0.99      1000000  sample             5242060.800                 ns/op
+Bench1.benchCollect:p0.999     1000000  sample            16786063.360                 ns/op
+Bench1.benchCollect:p0.9999    1000000  sample           144288514.048                 ns/op
+Bench1.benchCollect:p1.00      1000000  sample           147324928.000                 ns/op
+Bench1.benchCollect           10000000  sample     2750   27337603.631 ±   592397.757  ns/op
+Bench1.benchCollect:p0.00     10000000  sample            22937600.000                 ns/op
+Bench1.benchCollect:p0.50     10000000  sample            26542080.000                 ns/op
+Bench1.benchCollect:p0.90     10000000  sample            27328512.000                 ns/op
+Bench1.benchCollect:p0.95     10000000  sample            28490137.600                 ns/op
+Bench1.benchCollect:p0.99     10000000  sample            57868288.000                 ns/op
+Bench1.benchCollect:p0.999    10000000  sample           171634851.840                 ns/op
+Bench1.benchCollect:p0.9999   10000000  sample           174587904.000                 ns/op
+Bench1.benchCollect:p1.00     10000000  sample           174587904.000                 ns/op
+Bench1.benchCollect          100000000  sample      282  271200982.241 ± 24376673.040  ns/op
+Bench1.benchCollect:p0.00    100000000  sample           229900288.000                 ns/op
+Bench1.benchCollect:p0.50    100000000  sample           235143168.000                 ns/op
+Bench1.benchCollect:p0.90    100000000  sample           275460915.200                 ns/op
+Bench1.benchCollect:p0.95    100000000  sample           708680089.600                 ns/op
+Bench1.benchCollect:p0.99    100000000  sample           845236142.080                 ns/op
+Bench1.benchCollect:p0.999   100000000  sample           872415232.000                 ns/op
+Bench1.benchCollect:p0.9999  100000000  sample           872415232.000                 ns/op
+Bench1.benchCollect:p1.00    100000000  sample           872415232.000                 ns/op
+
+toInsert().stream().parallel().toList()
+Benchmark                          (n)    Mode      Cnt          Score          Error  Units
+Bench1.benchCollect                100  sample  1342038      27816.095 ±       54.355  ns/op
+Bench1.benchCollect:p0.00          100  sample                1292.000                 ns/op
+Bench1.benchCollect:p0.50          100  sample               27616.000                 ns/op
+Bench1.benchCollect:p0.90          100  sample               46912.000                 ns/op
+Bench1.benchCollect:p0.95          100  sample               52928.000                 ns/op
+Bench1.benchCollect:p0.99          100  sample               64768.000                 ns/op
+Bench1.benchCollect:p0.999         100  sample               81664.000                 ns/op
+Bench1.benchCollect:p0.9999        100  sample              107133.504                 ns/op
+Bench1.benchCollect:p1.00          100  sample            11747328.000                 ns/op
+Bench1.benchCollect               1000  sample  1468915      25424.604 ±       47.795  ns/op
+Bench1.benchCollect:p0.00         1000  sample                1666.000                 ns/op
+Bench1.benchCollect:p0.50         1000  sample               23808.000                 ns/op
+Bench1.benchCollect:p0.90         1000  sample               45376.000                 ns/op
+Bench1.benchCollect:p0.95         1000  sample               51392.000                 ns/op
+Bench1.benchCollect:p0.99         1000  sample               63744.000                 ns/op
+Bench1.benchCollect:p0.999        1000  sample               84352.000                 ns/op
+Bench1.benchCollect:p0.9999       1000  sample              343027.507                 ns/op
+Bench1.benchCollect:p1.00         1000  sample             4251648.000                 ns/op
+Bench1.benchCollect              10000  sample  1041167      35905.439 ±       63.344  ns/op
+Bench1.benchCollect:p0.00        10000  sample                6208.000                 ns/op
+Bench1.benchCollect:p0.50        10000  sample               32896.000                 ns/op
+Bench1.benchCollect:p0.90        10000  sample               57024.000                 ns/op
+Bench1.benchCollect:p0.95        10000  sample               63104.000                 ns/op
+Bench1.benchCollect:p0.99        10000  sample               75776.000                 ns/op
+Bench1.benchCollect:p0.999       10000  sample              102400.000                 ns/op
+Bench1.benchCollect:p0.9999      10000  sample              622592.000                 ns/op
+Bench1.benchCollect:p1.00        10000  sample             4157440.000                 ns/op
+Bench1.benchCollect             100000  sample  1106956      67679.773 ±       66.961  ns/op
+Bench1.benchCollect:p0.00       100000  sample               35072.000                 ns/op
+Bench1.benchCollect:p0.50       100000  sample               66816.000                 ns/op
+Bench1.benchCollect:p0.90       100000  sample               80256.000                 ns/op
+Bench1.benchCollect:p0.95       100000  sample               83328.000                 ns/op
+Bench1.benchCollect:p0.99       100000  sample               90624.000                 ns/op
+Bench1.benchCollect:p0.999      100000  sample              523776.000                 ns/op
+Bench1.benchCollect:p0.9999     100000  sample              671343.206                 ns/op
+Bench1.benchCollect:p1.00       100000  sample             3612672.000                 ns/op
+Bench1.benchCollect            1000000  sample    73201    1025167.337 ±    15744.183  ns/op
+Bench1.benchCollect:p0.00      1000000  sample              318976.000                 ns/op
+Bench1.benchCollect:p0.50      1000000  sample              939008.000                 ns/op
+Bench1.benchCollect:p0.90      1000000  sample             1216512.000                 ns/op
+Bench1.benchCollect:p0.95      1000000  sample             1327104.000                 ns/op
+Bench1.benchCollect:p0.99      1000000  sample             2396160.000                 ns/op
+Bench1.benchCollect:p0.999     1000000  sample            22708224.000                 ns/op
+Bench1.benchCollect:p0.9999    1000000  sample            40744989.491                 ns/op
+Bench1.benchCollect:p1.00      1000000  sample            63897600.000                 ns/op
+Bench1.benchCollect           10000000  sample     8137    9252098.863 ±   328949.173  ns/op
+Bench1.benchCollect:p0.00     10000000  sample             2707456.000                 ns/op
+Bench1.benchCollect:p0.50     10000000  sample             8486912.000                 ns/op
+Bench1.benchCollect:p0.90     10000000  sample            11157504.000                 ns/op
+Bench1.benchCollect:p0.95     10000000  sample            12273254.400                 ns/op
+Bench1.benchCollect:p0.99     10000000  sample            30287462.400                 ns/op
+Bench1.benchCollect:p0.999    10000000  sample           145119248.384                 ns/op
+Bench1.benchCollect:p0.9999   10000000  sample           174063616.000                 ns/op
+Bench1.benchCollect:p1.00     10000000  sample           174063616.000                 ns/op
+Bench1.benchCollect          100000000  sample      731  105826878.337 ± 19724935.751  ns/op
+Bench1.benchCollect:p0.00    100000000  sample            28311552.000                 ns/op
+Bench1.benchCollect:p0.50    100000000  sample            59965440.000                 ns/op
+Bench1.benchCollect:p0.90    100000000  sample           128083558.400                 ns/op
+Bench1.benchCollect:p0.95    100000000  sample           641518796.800                 ns/op
+Bench1.benchCollect:p0.99    100000000  sample           781902151.680                 ns/op
+Bench1.benchCollect:p0.999   100000000  sample           862978048.000                 ns/op
+Bench1.benchCollect:p0.9999  100000000  sample           862978048.000                 ns/op
+Bench1.benchCollect:p1.00    100000000  sample           862978048.000                 ns/op
+
+toInsert.stream().collect(Collectors.toList())
+Benchmark                          (n)    Mode      Cnt           Score          Error  Units
+Bench1.benchCollect                100  sample  1893085         349.796 ±        8.707  ns/op
+Bench1.benchCollect:p0.00          100  sample                  125.000                 ns/op
+Bench1.benchCollect:p0.50          100  sample                  333.000                 ns/op
+Bench1.benchCollect:p0.90          100  sample                  334.000                 ns/op
+Bench1.benchCollect:p0.95          100  sample                  375.000                 ns/op
+Bench1.benchCollect:p0.99          100  sample                  458.000                 ns/op
+Bench1.benchCollect:p0.999         100  sample                 5000.000                 ns/op
+Bench1.benchCollect:p0.9999        100  sample                14864.000                 ns/op
+Bench1.benchCollect:p1.00          100  sample              2658304.000                 ns/op
+Bench1.benchCollect               1000  sample  1619862        2999.265 ±       19.622  ns/op
+Bench1.benchCollect:p0.00         1000  sample                 2580.000                 ns/op
+Bench1.benchCollect:p0.50         1000  sample                 2832.000                 ns/op
+Bench1.benchCollect:p0.90         1000  sample                 2916.000                 ns/op
+Bench1.benchCollect:p0.95         1000  sample                 3040.000                 ns/op
+Bench1.benchCollect:p0.99         1000  sample                 3956.000                 ns/op
+Bench1.benchCollect:p0.999        1000  sample                14944.000                 ns/op
+Bench1.benchCollect:p0.9999       1000  sample               533532.058                 ns/op
+Bench1.benchCollect:p1.00         1000  sample              1210368.000                 ns/op
+Bench1.benchCollect              10000  sample  1174057       32034.550 ±       41.977  ns/op
+Bench1.benchCollect:p0.00        10000  sample                25664.000                 ns/op
+Bench1.benchCollect:p0.50        10000  sample                28192.000                 ns/op
+Bench1.benchCollect:p0.90        10000  sample                41152.000                 ns/op
+Bench1.benchCollect:p0.95        10000  sample                41856.000                 ns/op
+Bench1.benchCollect:p0.99        10000  sample                45824.000                 ns/op
+Bench1.benchCollect:p0.999       10000  sample                57088.000                 ns/op
+Bench1.benchCollect:p0.9999      10000  sample               604160.000                 ns/op
+Bench1.benchCollect:p1.00        10000  sample               791552.000                 ns/op
+Bench1.benchCollect             100000  sample   275732      271956.174 ±      438.470  ns/op
+Bench1.benchCollect:p0.00       100000  sample               244480.000                 ns/op
+Bench1.benchCollect:p0.50       100000  sample               267776.000                 ns/op
+Bench1.benchCollect:p0.90       100000  sample               280576.000                 ns/op
+Bench1.benchCollect:p0.95       100000  sample               288256.000                 ns/op
+Bench1.benchCollect:p0.99       100000  sample               308736.000                 ns/op
+Bench1.benchCollect:p0.999      100000  sample               848896.000                 ns/op
+Bench1.benchCollect:p0.9999     100000  sample               915456.000                 ns/op
+Bench1.benchCollect:p1.00       100000  sample             24805376.000                 ns/op
+Bench1.benchCollect            1000000  sample    18366     4086031.416 ±    69134.988  ns/op
+Bench1.benchCollect:p0.00      1000000  sample              2977792.000                 ns/op
+Bench1.benchCollect:p0.50      1000000  sample              3244032.000                 ns/op
+Bench1.benchCollect:p0.90      1000000  sample              5652480.000                 ns/op
+Bench1.benchCollect:p0.95      1000000  sample              9633792.000                 ns/op
+Bench1.benchCollect:p0.99      1000000  sample             15258910.720                 ns/op
+Bench1.benchCollect:p0.999     1000000  sample             26497286.144                 ns/op
+Bench1.benchCollect:p0.9999    1000000  sample             52980803.174                 ns/op
+Bench1.benchCollect:p1.00      1000000  sample            108527616.000                 ns/op
+Bench1.benchCollect           10000000  sample     1664    45236637.538 ±  1392974.596  ns/op
+Bench1.benchCollect:p0.00     10000000  sample             30801920.000                 ns/op
+Bench1.benchCollect:p0.50     10000000  sample             38895616.000                 ns/op
+Bench1.benchCollect:p0.90     10000000  sample             74579968.000                 ns/op
+Bench1.benchCollect:p0.95     10000000  sample             80478208.000                 ns/op
+Bench1.benchCollect:p0.99     10000000  sample             86114304.000                 ns/op
+Bench1.benchCollect:p0.999    10000000  sample             94955765.760                 ns/op
+Bench1.benchCollect:p0.9999   10000000  sample            101318656.000                 ns/op
+Bench1.benchCollect:p1.00     10000000  sample            101318656.000                 ns/op
+Bench1.benchCollect          100000000  sample      156   520265097.846 ± 80597601.862  ns/op
+Bench1.benchCollect:p0.00    100000000  sample            308281344.000                 ns/op
+Bench1.benchCollect:p0.50    100000000  sample            409206784.000                 ns/op
+Bench1.benchCollect:p0.90    100000000  sample           1083388723.200                 ns/op
+Bench1.benchCollect:p0.95    100000000  sample           1261227212.800                 ns/op
+Bench1.benchCollect:p0.99    100000000  sample           1379045212.160                 ns/op
+Bench1.benchCollect:p0.999   100000000  sample           1386217472.000                 ns/op
+Bench1.benchCollect:p0.9999  100000000  sample           1386217472.000                 ns/op
+Bench1.benchCollect:p1.00    100000000  sample           1386217472.000                 ns/op
+
+toInsert.stream().parallel().collect(Collectors.toList())
+Benchmark                          (n)    Mode      Cnt           Score          Error  Units
+Bench1.benchCollect                100  sample  1222072       30545.882 ±       43.682  ns/op
+Bench1.benchCollect:p0.00          100  sample                 2084.000                 ns/op
+Bench1.benchCollect:p0.50          100  sample                30016.000                 ns/op
+Bench1.benchCollect:p0.90          100  sample                47232.000                 ns/op
+Bench1.benchCollect:p0.95          100  sample                52736.000                 ns/op
+Bench1.benchCollect:p0.99          100  sample                63680.000                 ns/op
+Bench1.benchCollect:p0.999         100  sample                80256.000                 ns/op
+Bench1.benchCollect:p0.9999        100  sample               491389.901                 ns/op
+Bench1.benchCollect:p1.00          100  sample              1331200.000                 ns/op
+Bench1.benchCollect               1000  sample   994819       37594.733 ±       60.699  ns/op
+Bench1.benchCollect:p0.00         1000  sample                 4160.000                 ns/op
+Bench1.benchCollect:p0.50         1000  sample                37184.000                 ns/op
+Bench1.benchCollect:p0.90         1000  sample                51520.000                 ns/op
+Bench1.benchCollect:p0.95         1000  sample                56384.000                 ns/op
+Bench1.benchCollect:p0.99         1000  sample                66688.000                 ns/op
+Bench1.benchCollect:p0.999        1000  sample                91648.000                 ns/op
+Bench1.benchCollect:p0.9999       1000  sample               624640.000                 ns/op
+Bench1.benchCollect:p1.00         1000  sample              4218880.000                 ns/op
+Bench1.benchCollect              10000  sample   819538       48975.652 ±      122.332  ns/op
+Bench1.benchCollect:p0.00        10000  sample                17280.000                 ns/op
+Bench1.benchCollect:p0.50        10000  sample                47168.000                 ns/op
+Bench1.benchCollect:p0.90        10000  sample                60032.000                 ns/op
+Bench1.benchCollect:p0.95        10000  sample                65536.000                 ns/op
+Bench1.benchCollect:p0.99        10000  sample                81152.000                 ns/op
+Bench1.benchCollect:p0.999       10000  sample               613376.000                 ns/op
+Bench1.benchCollect:p0.9999      10000  sample               878875.238                 ns/op
+Bench1.benchCollect:p1.00        10000  sample             15745024.000                 ns/op
+Bench1.benchCollect             100000  sample   469757      159538.120 ±      251.754  ns/op
+Bench1.benchCollect:p0.00       100000  sample               112896.000                 ns/op
+Bench1.benchCollect:p0.50       100000  sample               154368.000                 ns/op
+Bench1.benchCollect:p0.90       100000  sample               172032.000                 ns/op
+Bench1.benchCollect:p0.95       100000  sample               177664.000                 ns/op
+Bench1.benchCollect:p0.99       100000  sample               199936.000                 ns/op
+Bench1.benchCollect:p0.999      100000  sample               873472.000                 ns/op
+Bench1.benchCollect:p0.9999     100000  sample               952320.000                 ns/op
+Bench1.benchCollect:p1.00       100000  sample              2375680.000                 ns/op
+Bench1.benchCollect            1000000  sample    41521     1806929.176 ±    37356.397  ns/op
+Bench1.benchCollect:p0.00      1000000  sample              1083392.000                 ns/op
+Bench1.benchCollect:p0.50      1000000  sample              1286144.000                 ns/op
+Bench1.benchCollect:p0.90      1000000  sample              1662976.000                 ns/op
+Bench1.benchCollect:p0.95      1000000  sample              5185536.000                 ns/op
+Bench1.benchCollect:p0.99      1000000  sample             16678912.000                 ns/op
+Bench1.benchCollect:p0.999     1000000  sample             21004288.000                 ns/op
+Bench1.benchCollect:p0.9999    1000000  sample             27671776.461                 ns/op
+Bench1.benchCollect:p1.00      1000000  sample             46530560.000                 ns/op
+Bench1.benchCollect           10000000  sample     1632    46145827.137 ±  2226604.236  ns/op
+Bench1.benchCollect:p0.00     10000000  sample             10878976.000                 ns/op
+Bench1.benchCollect:p0.50     10000000  sample             48463872.000                 ns/op
+Bench1.benchCollect:p0.90     10000000  sample             77515980.800                 ns/op
+Bench1.benchCollect:p0.95     10000000  sample             92667904.000                 ns/op
+Bench1.benchCollect:p0.99     10000000  sample            119149690.880                 ns/op
+Bench1.benchCollect:p0.999    10000000  sample            178505908.224                 ns/op
+Bench1.benchCollect:p0.9999   10000000  sample            184811520.000                 ns/op
+Bench1.benchCollect:p1.00     10000000  sample            184811520.000                 ns/op
+Bench1.benchCollect          100000000  sample       60  1393207978.667 ± 61191932.674  ns/op
+Bench1.benchCollect:p0.00    100000000  sample            998244352.000                 ns/op
+Bench1.benchCollect:p0.50    100000000  sample           1399848960.000                 ns/op
+Bench1.benchCollect:p0.90    100000000  sample           1563636531.200                 ns/op
+Bench1.benchCollect:p0.95    100000000  sample           1601594982.400                 ns/op
+Bench1.benchCollect:p0.99    100000000  sample           1644167168.000                 ns/op
+Bench1.benchCollect:p0.999   100000000  sample           1644167168.000                 ns/op
+Bench1.benchCollect:p0.9999  100000000  sample           1644167168.000                 ns/op
+Bench1.benchCollect:p1.00    100000000  sample           1644167168.000                 ns/op
+
+toInsert.stream().collect(Collectors.toCollection(TrieForkJoinList::new))
+Benchmark                          (n)    Mode      Cnt           Score          Error  Units
+Bench1.benchCollect                100  sample  1885774         654.936 ±        5.743  ns/op
+Bench1.benchCollect:p0.00          100  sample                  375.000                 ns/op
+Bench1.benchCollect:p0.50          100  sample                  625.000                 ns/op
+Bench1.benchCollect:p0.90          100  sample                  667.000                 ns/op
+Bench1.benchCollect:p0.95          100  sample                  750.000                 ns/op
+Bench1.benchCollect:p0.99          100  sample                  834.000                 ns/op
+Bench1.benchCollect:p0.999         100  sample                 7040.000                 ns/op
+Bench1.benchCollect:p0.9999        100  sample                15677.520                 ns/op
+Bench1.benchCollect:p1.00          100  sample               851968.000                 ns/op
+Bench1.benchCollect               1000  sample  1558921        6057.526 ±       15.203  ns/op
+Bench1.benchCollect:p0.00         1000  sample                 5576.000                 ns/op
+Bench1.benchCollect:p0.50         1000  sample                 5872.000                 ns/op
+Bench1.benchCollect:p0.90         1000  sample                 6120.000                 ns/op
+Bench1.benchCollect:p0.95         1000  sample                 6496.000                 ns/op
+Bench1.benchCollect:p0.99         1000  sample                 8080.000                 ns/op
+Bench1.benchCollect:p0.999        1000  sample                19648.000                 ns/op
+Bench1.benchCollect:p0.9999       1000  sample                38761.395                 ns/op
+Bench1.benchCollect:p1.00         1000  sample               915456.000                 ns/op
+Bench1.benchCollect              10000  sample  1231438       60897.566 ±       25.547  ns/op
+Bench1.benchCollect:p0.00        10000  sample                57472.000                 ns/op
+Bench1.benchCollect:p0.50        10000  sample                59584.000                 ns/op
+Bench1.benchCollect:p0.90        10000  sample                63040.000                 ns/op
+Bench1.benchCollect:p0.95        10000  sample                65792.000                 ns/op
+Bench1.benchCollect:p0.99        10000  sample                72192.000                 ns/op
+Bench1.benchCollect:p0.999       10000  sample                83712.000                 ns/op
+Bench1.benchCollect:p0.9999      10000  sample               578560.000                 ns/op
+Bench1.benchCollect:p1.00        10000  sample               775168.000                 ns/op
+Bench1.benchCollect             100000  sample   118179      634686.610 ±      389.294  ns/op
+Bench1.benchCollect:p0.00       100000  sample               601088.000                 ns/op
+Bench1.benchCollect:p0.50       100000  sample               627712.000                 ns/op
+Bench1.benchCollect:p0.90       100000  sample               651264.000                 ns/op
+Bench1.benchCollect:p0.95       100000  sample               662528.000                 ns/op
+Bench1.benchCollect:p0.99       100000  sample               691200.000                 ns/op
+Bench1.benchCollect:p0.999      100000  sample              1339023.360                 ns/op
+Bench1.benchCollect:p0.9999     100000  sample              1417588.736                 ns/op
+Bench1.benchCollect:p1.00       100000  sample              1497088.000                 ns/op
+Bench1.benchCollect            1000000  sample    11909     6303708.574 ±     4363.619  ns/op
+Bench1.benchCollect:p0.00      1000000  sample              6144000.000                 ns/op
+Bench1.benchCollect:p0.50      1000000  sample              6275072.000                 ns/op
+Bench1.benchCollect:p0.90      1000000  sample              6397952.000                 ns/op
+Bench1.benchCollect:p0.95      1000000  sample              6455296.000                 ns/op
+Bench1.benchCollect:p0.99      1000000  sample              7036928.000                 ns/op
+Bench1.benchCollect:p0.999     1000000  sample              7381729.280                 ns/op
+Bench1.benchCollect:p0.9999    1000000  sample             11936538.624                 ns/op
+Bench1.benchCollect:p1.00      1000000  sample             12926976.000                 ns/op
+Bench1.benchCollect           10000000  sample     1178    64083248.244 ±   197382.823  ns/op
+Bench1.benchCollect:p0.00     10000000  sample             63045632.000                 ns/op
+Bench1.benchCollect:p0.50     10000000  sample             63832064.000                 ns/op
+Bench1.benchCollect:p0.90     10000000  sample             64618496.000                 ns/op
+Bench1.benchCollect:p0.95     10000000  sample             65601536.000                 ns/op
+Bench1.benchCollect:p0.99     10000000  sample             67895296.000                 ns/op
+Bench1.benchCollect:p0.999    10000000  sample            118259974.144                 ns/op
+Bench1.benchCollect:p0.9999   10000000  sample            127926272.000                 ns/op
+Bench1.benchCollect:p1.00     10000000  sample            127926272.000                 ns/op
+Bench1.benchCollect          100000000  sample      118   689029953.085 ± 18496961.561  ns/op
+Bench1.benchCollect:p0.00    100000000  sample            658505728.000                 ns/op
+Bench1.benchCollect:p0.50    100000000  sample            666894336.000                 ns/op
+Bench1.benchCollect:p0.90    100000000  sample            739350937.600                 ns/op
+Bench1.benchCollect:p0.95    100000000  sample            803838361.600                 ns/op
+Bench1.benchCollect:p0.99    100000000  sample           1050631208.960                 ns/op
+Bench1.benchCollect:p0.999   100000000  sample           1053818880.000                 ns/op
+Bench1.benchCollect:p0.9999  100000000  sample           1053818880.000                 ns/op
+Bench1.benchCollect:p1.00    100000000  sample           1053818880.000                 ns/op
+
+toInsert.stream().parallel().collect(Collectors.toCollection(TrieForkJoinList::new))
+Benchmark                          (n)    Mode      Cnt           Score          Error  Units
+Bench1.benchCollect                100  sample  1244516       29996.717 ±       43.899  ns/op
+Bench1.benchCollect:p0.00          100  sample                 2208.000                 ns/op
+Bench1.benchCollect:p0.50          100  sample                29248.000                 ns/op
+Bench1.benchCollect:p0.90          100  sample                47104.000                 ns/op
+Bench1.benchCollect:p0.95          100  sample                52480.000                 ns/op
+Bench1.benchCollect:p0.99          100  sample                63232.000                 ns/op
+Bench1.benchCollect:p0.999         100  sample                80701.824                 ns/op
+Bench1.benchCollect:p0.9999        100  sample               557253.837                 ns/op
+Bench1.benchCollect:p1.00          100  sample              1325056.000                 ns/op
+Bench1.benchCollect               1000  sample  1002786       37260.041 ±       46.966  ns/op
+Bench1.benchCollect:p0.00         1000  sample                 5000.000                 ns/op
+Bench1.benchCollect:p0.50         1000  sample                37120.000                 ns/op
+Bench1.benchCollect:p0.90         1000  sample                51072.000                 ns/op
+Bench1.benchCollect:p0.95         1000  sample                55680.000                 ns/op
+Bench1.benchCollect:p0.99         1000  sample                65088.000                 ns/op
+Bench1.benchCollect:p0.999        1000  sample                80256.000                 ns/op
+Bench1.benchCollect:p0.9999       1000  sample               592610.611                 ns/op
+Bench1.benchCollect:p1.00         1000  sample               893952.000                 ns/op
+Bench1.benchCollect              10000  sample  1359397       55092.525 ±       49.764  ns/op
+Bench1.benchCollect:p0.00        10000  sample                32032.000                 ns/op
+Bench1.benchCollect:p0.50        10000  sample                54080.000                 ns/op
+Bench1.benchCollect:p0.90        10000  sample                65792.000                 ns/op
+Bench1.benchCollect:p0.95        10000  sample                70784.000                 ns/op
+Bench1.benchCollect:p0.99        10000  sample                79104.000                 ns/op
+Bench1.benchCollect:p0.999       10000  sample                99840.000                 ns/op
+Bench1.benchCollect:p0.9999      10000  sample               663552.000                 ns/op
+Bench1.benchCollect:p1.00        10000  sample               873472.000                 ns/op
+Bench1.benchCollect             100000  sample   318341      235573.178 ±      295.122  ns/op
+Bench1.benchCollect:p0.00       100000  sample               190976.000                 ns/op
+Bench1.benchCollect:p0.50       100000  sample               230144.000                 ns/op
+Bench1.benchCollect:p0.90       100000  sample               244224.000                 ns/op
+Bench1.benchCollect:p0.95       100000  sample               249856.000                 ns/op
+Bench1.benchCollect:p0.99       100000  sample               271360.000                 ns/op
+Bench1.benchCollect:p0.999      100000  sample               906240.000                 ns/op
+Bench1.benchCollect:p0.9999     100000  sample               977405.338                 ns/op
+Bench1.benchCollect:p1.00       100000  sample              1269760.000                 ns/op
+Bench1.benchCollect            1000000  sample    44293     1694454.989 ±     3503.388  ns/op
+Bench1.benchCollect:p0.00      1000000  sample              1509376.000                 ns/op
+Bench1.benchCollect:p0.50      1000000  sample              1658880.000                 ns/op
+Bench1.benchCollect:p0.90      1000000  sample              1755136.000                 ns/op
+Bench1.benchCollect:p0.95      1000000  sample              1810432.000                 ns/op
+Bench1.benchCollect:p0.99      1000000  sample              2871296.000                 ns/op
+Bench1.benchCollect:p0.999     1000000  sample              3297280.000                 ns/op
+Bench1.benchCollect:p0.9999    1000000  sample              3527812.710                 ns/op
+Bench1.benchCollect:p1.00      1000000  sample              3649536.000                 ns/op
+Bench1.benchCollect           10000000  sample     2668    28225990.429 ±   743234.704  ns/op
+Bench1.benchCollect:p0.00     10000000  sample             16007168.000                 ns/op
+Bench1.benchCollect:p0.50     10000000  sample             26935296.000                 ns/op
+Bench1.benchCollect:p0.90     10000000  sample             43515904.000                 ns/op
+Bench1.benchCollect:p0.95     10000000  sample             55282892.800                 ns/op
+Bench1.benchCollect:p0.99     10000000  sample             65592360.960                 ns/op
+Bench1.benchCollect:p0.999    10000000  sample             77768163.328                 ns/op
+Bench1.benchCollect:p0.9999   10000000  sample             86638592.000                 ns/op
+Bench1.benchCollect:p1.00     10000000  sample             86638592.000                 ns/op
+Bench1.benchCollect          100000000  sample       92   894657580.522 ± 94122690.333  ns/op
+Bench1.benchCollect:p0.00    100000000  sample            360710144.000                 ns/op
+Bench1.benchCollect:p0.50    100000000  sample            925368320.000                 ns/op
+Bench1.benchCollect:p0.90    100000000  sample           1278214144.000                 ns/op
+Bench1.benchCollect:p0.95    100000000  sample           1315124019.200                 ns/op
+Bench1.benchCollect:p0.99    100000000  sample           1560281088.000                 ns/op
+Bench1.benchCollect:p0.999   100000000  sample           1560281088.000                 ns/op
+Bench1.benchCollect:p0.9999  100000000  sample           1560281088.000                 ns/op
+Bench1.benchCollect:p1.00    100000000  sample           1560281088.000                 ns/op
+
+toInsert.stream().parallel().collect(joiningCollector())
+Benchmark                          (n)    Mode      Cnt          Score         Error  Units
+Bench1.benchCollect                100  sample  1230474      30347.002 ±      50.602  ns/op
+Bench1.benchCollect:p0.00          100  sample                2084.000                ns/op
+Bench1.benchCollect:p0.50          100  sample               29984.000                ns/op
+Bench1.benchCollect:p0.90          100  sample               46656.000                ns/op
+Bench1.benchCollect:p0.95          100  sample               52032.000                ns/op
+Bench1.benchCollect:p0.99          100  sample               62912.000                ns/op
+Bench1.benchCollect:p0.999         100  sample               79872.000                ns/op
+Bench1.benchCollect:p0.9999        100  sample              555983.360                ns/op
+Bench1.benchCollect:p1.00          100  sample            10043392.000                ns/op
+Bench1.benchCollect               1000  sample  1015553      36800.953 ±      59.639  ns/op
+Bench1.benchCollect:p0.00         1000  sample                5000.000                ns/op
+Bench1.benchCollect:p0.50         1000  sample               37056.000                ns/op
+Bench1.benchCollect:p0.90         1000  sample               51840.000                ns/op
+Bench1.benchCollect:p0.95         1000  sample               56384.000                ns/op
+Bench1.benchCollect:p0.99         1000  sample               65664.000                ns/op
+Bench1.benchCollect:p0.999        1000  sample               82304.000                ns/op
+Bench1.benchCollect:p0.9999       1000  sample              618496.000                ns/op
+Bench1.benchCollect:p1.00         1000  sample             7061504.000                ns/op
+Bench1.benchCollect              10000  sample  1128812      50864.237 ±      46.250  ns/op
+Bench1.benchCollect:p0.00        10000  sample               22080.000                ns/op
+Bench1.benchCollect:p0.50        10000  sample               50624.000                ns/op
+Bench1.benchCollect:p0.90        10000  sample               62336.000                ns/op
+Bench1.benchCollect:p0.95        10000  sample               66560.000                ns/op
+Bench1.benchCollect:p0.99        10000  sample               74880.000                ns/op
+Bench1.benchCollect:p0.999       10000  sample               93696.000                ns/op
+Bench1.benchCollect:p0.9999      10000  sample              618617.549                ns/op
+Bench1.benchCollect:p1.00        10000  sample              858112.000                ns/op
+Bench1.benchCollect             100000  sample   499410     150075.876 ±     173.634  ns/op
+Bench1.benchCollect:p0.00       100000  sample              113408.000                ns/op
+Bench1.benchCollect:p0.50       100000  sample              146944.000                ns/op
+Bench1.benchCollect:p0.90       100000  sample              159232.000                ns/op
+Bench1.benchCollect:p0.95       100000  sample              164608.000                ns/op
+Bench1.benchCollect:p0.99       100000  sample              183808.000                ns/op
+Bench1.benchCollect:p0.999      100000  sample              753664.000                ns/op
+Bench1.benchCollect:p0.9999     100000  sample              943164.314                ns/op
+Bench1.benchCollect:p1.00       100000  sample             4734976.000                ns/op
+Bench1.benchCollect            1000000  sample    82815     905704.315 ±    2290.279  ns/op
+Bench1.benchCollect:p0.00      1000000  sample              730112.000                ns/op
+Bench1.benchCollect:p0.50      1000000  sample              858112.000                ns/op
+Bench1.benchCollect:p0.90      1000000  sample             1001472.000                ns/op
+Bench1.benchCollect:p0.95      1000000  sample             1075200.000                ns/op
+Bench1.benchCollect:p0.99      1000000  sample             1781760.000                ns/op
+Bench1.benchCollect:p0.999     1000000  sample             2900393.984                ns/op
+Bench1.benchCollect:p0.9999    1000000  sample             6167357.030                ns/op
+Bench1.benchCollect:p1.00      1000000  sample            12402688.000                ns/op
+Bench1.benchCollect           10000000  sample     9178    8180084.201 ±   26620.348  ns/op
+Bench1.benchCollect:p0.00     10000000  sample             7348224.000                ns/op
+Bench1.benchCollect:p0.50     10000000  sample             8110080.000                ns/op
+Bench1.benchCollect:p0.90     10000000  sample             8470528.000                ns/op
+Bench1.benchCollect:p0.95     10000000  sample             8978432.000                ns/op
+Bench1.benchCollect:p0.99     10000000  sample            12422512.640                ns/op
+Bench1.benchCollect:p0.999    10000000  sample            14750253.056                ns/op
+Bench1.benchCollect:p0.9999   10000000  sample            27230208.000                ns/op
+Bench1.benchCollect:p1.00     10000000  sample            27230208.000                ns/op
+Bench1.benchCollect          100000000  sample      818   92725107.795 ± 2241310.088  ns/op
+Bench1.benchCollect:p0.00    100000000  sample            75628544.000                ns/op
+Bench1.benchCollect:p0.50    100000000  sample            84279296.000                ns/op
+Bench1.benchCollect:p0.90    100000000  sample           127664128.000                ns/op
+Bench1.benchCollect:p0.95    100000000  sample           130285568.000                ns/op
+Bench1.benchCollect:p0.99    100000000  sample           133013176.320                ns/op
+Bench1.benchCollect:p0.999   100000000  sample           295698432.000                ns/op
+Bench1.benchCollect:p0.9999  100000000  sample           295698432.000                ns/op
+Bench1.benchCollect:p1.00    100000000  sample           295698432.000                ns/op
+
+toInsert.stream().parallel().filter(i -> true).toList()
+Benchmark                          (n)    Mode      Cnt          Score          Error  Units
+Bench1.benchCollect                100  sample  1129014      57454.645 ±       77.360  ns/op
+Bench1.benchCollect:p0.00          100  sample                4120.000                 ns/op
+Bench1.benchCollect:p0.50          100  sample               61440.000                 ns/op
+Bench1.benchCollect:p0.90          100  sample               84608.000                 ns/op
+Bench1.benchCollect:p0.95          100  sample               91264.000                 ns/op
+Bench1.benchCollect:p0.99          100  sample              104576.000                 ns/op
+Bench1.benchCollect:p0.999         100  sample              123264.000                 ns/op
+Bench1.benchCollect:p0.9999        100  sample              543325.184                 ns/op
+Bench1.benchCollect:p1.00          100  sample             1488896.000                 ns/op
+Bench1.benchCollect               1000  sample  1164704      62143.209 ±       68.336  ns/op
+Bench1.benchCollect:p0.00         1000  sample                5160.000                 ns/op
+Bench1.benchCollect:p0.50         1000  sample               64704.000                 ns/op
+Bench1.benchCollect:p0.90         1000  sample               85888.000                 ns/op
+Bench1.benchCollect:p0.95         1000  sample               92160.000                 ns/op
+Bench1.benchCollect:p0.99         1000  sample              104704.000                 ns/op
+Bench1.benchCollect:p0.999        1000  sample              121984.000                 ns/op
+Bench1.benchCollect:p0.9999       1000  sample              579704.832                 ns/op
+Bench1.benchCollect:p1.00         1000  sample             1251328.000                 ns/op
+Bench1.benchCollect              10000  sample  1063789      70426.137 ±      108.085  ns/op
+Bench1.benchCollect:p0.00        10000  sample               14448.000                 ns/op
+Bench1.benchCollect:p0.50        10000  sample               72704.000                 ns/op
+Bench1.benchCollect:p0.90        10000  sample               96640.000                 ns/op
+Bench1.benchCollect:p0.95        10000  sample              103424.000                 ns/op
+Bench1.benchCollect:p0.99        10000  sample              118400.000                 ns/op
+Bench1.benchCollect:p0.999       10000  sample              161280.000                 ns/op
+Bench1.benchCollect:p0.9999      10000  sample              684279.808                 ns/op
+Bench1.benchCollect:p1.00        10000  sample            12140544.000                 ns/op
+Bench1.benchCollect             100000  sample   614494     121958.707 ±      145.439  ns/op
+Bench1.benchCollect:p0.00       100000  sample               68480.000                 ns/op
+Bench1.benchCollect:p0.50       100000  sample              119936.000                 ns/op
+Bench1.benchCollect:p0.90       100000  sample              141056.000                 ns/op
+Bench1.benchCollect:p0.95       100000  sample              147712.000                 ns/op
+Bench1.benchCollect:p0.99       100000  sample              162816.000                 ns/op
+Bench1.benchCollect:p0.999      100000  sample              740352.000                 ns/op
+Bench1.benchCollect:p0.9999     100000  sample              841728.000                 ns/op
+Bench1.benchCollect:p1.00       100000  sample             4227072.000                 ns/op
+Bench1.benchCollect            1000000  sample    84976     882734.418 ±    24309.523  ns/op
+Bench1.benchCollect:p0.00      1000000  sample              447488.000                 ns/op
+Bench1.benchCollect:p0.50      1000000  sample              596992.000                 ns/op
+Bench1.benchCollect:p0.90      1000000  sample              859136.000                 ns/op
+Bench1.benchCollect:p0.95      1000000  sample             1054720.000                 ns/op
+Bench1.benchCollect:p0.99      1000000  sample            12259000.320                 ns/op
+Bench1.benchCollect:p0.999     1000000  sample            28575956.992                 ns/op
+Bench1.benchCollect:p0.9999    1000000  sample            43810966.733                 ns/op
+Bench1.benchCollect:p1.00      1000000  sample            50135040.000                 ns/op
+Bench1.benchCollect           10000000  sample     8608    8721929.041 ±   323523.734  ns/op
+Bench1.benchCollect:p0.00     10000000  sample             4038656.000                 ns/op
+Bench1.benchCollect:p0.50     10000000  sample             6086656.000                 ns/op
+Bench1.benchCollect:p0.90     10000000  sample            12451840.000                 ns/op
+Bench1.benchCollect:p0.95     10000000  sample            24903680.000                 ns/op
+Bench1.benchCollect:p0.99     10000000  sample            56349163.520                 ns/op
+Bench1.benchCollect:p0.999    10000000  sample            73058353.152                 ns/op
+Bench1.benchCollect:p0.9999   10000000  sample            86114304.000                 ns/op
+Bench1.benchCollect:p1.00     10000000  sample            86114304.000                 ns/op
+Bench1.benchCollect          100000000  sample      310  253810146.271 ± 49449018.553  ns/op
+Bench1.benchCollect:p0.00    100000000  sample            66650112.000                 ns/op
+Bench1.benchCollect:p0.50    100000000  sample           103350272.000                 ns/op
+Bench1.benchCollect:p0.90    100000000  sample           697198182.400                 ns/op
+Bench1.benchCollect:p0.95    100000000  sample           745537536.000                 ns/op
+Bench1.benchCollect:p0.99    100000000  sample           792272568.320                 ns/op
+Bench1.benchCollect:p0.999   100000000  sample           828375040.000                 ns/op
+Bench1.benchCollect:p0.9999  100000000  sample           828375040.000                 ns/op
+Bench1.benchCollect:p1.00    100000000  sample           828375040.000                 ns/op
+
+toInsert.stream().parallel().filter(i -> true).collect(joiningCollector())
+Benchmark                          (n)    Mode      Cnt          Score         Error  Units
+Bench1.benchCollect                100  sample  1240097      30110.569 ±      43.460  ns/op
+Bench1.benchCollect:p0.00          100  sample                2000.000                ns/op
+Bench1.benchCollect:p0.50          100  sample               29536.000                ns/op
+Bench1.benchCollect:p0.90          100  sample               46912.000                ns/op
+Bench1.benchCollect:p0.95          100  sample               52288.000                ns/op
+Bench1.benchCollect:p0.99          100  sample               63360.000                ns/op
+Bench1.benchCollect:p0.999         100  sample               81536.000                ns/op
+Bench1.benchCollect:p0.9999        100  sample              570357.965                ns/op
+Bench1.benchCollect:p1.00          100  sample             1396736.000                ns/op
+Bench1.benchCollect               1000  sample  1044431      35767.037 ±      51.061  ns/op
+Bench1.benchCollect:p0.00         1000  sample                5288.000                ns/op
+Bench1.benchCollect:p0.50         1000  sample               35584.000                ns/op
+Bench1.benchCollect:p0.90         1000  sample               51776.000                ns/op
+Bench1.benchCollect:p0.95         1000  sample               56704.000                ns/op
+Bench1.benchCollect:p0.99         1000  sample               66816.000                ns/op
+Bench1.benchCollect:p0.999        1000  sample               85632.000                ns/op
+Bench1.benchCollect:p0.9999       1000  sample              595968.000                ns/op
+Bench1.benchCollect:p1.00         1000  sample             3911680.000                ns/op
+Bench1.benchCollect              10000  sample  1309861      51455.868 ±      47.140  ns/op
+Bench1.benchCollect:p0.00        10000  sample               22912.000                ns/op
+Bench1.benchCollect:p0.50        10000  sample               51328.000                ns/op
+Bench1.benchCollect:p0.90        10000  sample               63040.000                ns/op
+Bench1.benchCollect:p0.95        10000  sample               67328.000                ns/op
+Bench1.benchCollect:p0.99        10000  sample               75264.000                ns/op
+Bench1.benchCollect:p0.999       10000  sample               97792.000                ns/op
+Bench1.benchCollect:p0.9999      10000  sample              618510.131                ns/op
+Bench1.benchCollect:p1.00        10000  sample             6397952.000                ns/op
+Bench1.benchCollect             100000  sample   496502     150957.604 ±     169.687  ns/op
+Bench1.benchCollect:p0.00       100000  sample              109824.000                ns/op
+Bench1.benchCollect:p0.50       100000  sample              147968.000                ns/op
+Bench1.benchCollect:p0.90       100000  sample              159232.000                ns/op
+Bench1.benchCollect:p0.95       100000  sample              164352.000                ns/op
+Bench1.benchCollect:p0.99       100000  sample              190464.000                ns/op
+Bench1.benchCollect:p0.999      100000  sample              732160.000                ns/op
+Bench1.benchCollect:p0.9999     100000  sample              859494.093                ns/op
+Bench1.benchCollect:p1.00       100000  sample             4100096.000                ns/op
+Bench1.benchCollect            1000000  sample    76720     977534.558 ±    1658.028  ns/op
+Bench1.benchCollect:p0.00      1000000  sample              852992.000                ns/op
+Bench1.benchCollect:p0.50      1000000  sample              948224.000                ns/op
+Bench1.benchCollect:p0.90      1000000  sample             1037312.000                ns/op
+Bench1.benchCollect:p0.95      1000000  sample             1083392.000                ns/op
+Bench1.benchCollect:p0.99      1000000  sample             1802240.000                ns/op
+Bench1.benchCollect:p0.999     1000000  sample             2266230.784                ns/op
+Bench1.benchCollect:p0.9999    1000000  sample             4066935.194                ns/op
+Bench1.benchCollect:p1.00      1000000  sample             5922816.000                ns/op
+Bench1.benchCollect           10000000  sample     7383   10168430.125 ±   41839.392  ns/op
+Bench1.benchCollect:p0.00     10000000  sample             8716288.000                ns/op
+Bench1.benchCollect:p0.50     10000000  sample             9682944.000                ns/op
+Bench1.benchCollect:p0.90     10000000  sample            11452416.000                ns/op
+Bench1.benchCollect:p0.95     10000000  sample            11796480.000                ns/op
+Bench1.benchCollect:p0.99     10000000  sample            13910016.000                ns/op
+Bench1.benchCollect:p0.999    10000000  sample            16870539.264                ns/op
+Bench1.benchCollect:p0.9999   10000000  sample            23822336.000                ns/op
+Bench1.benchCollect:p1.00     10000000  sample            23822336.000                ns/op
+Bench1.benchCollect          100000000  sample      696  109168663.540 ± 2754086.039  ns/op
+Bench1.benchCollect:p0.00    100000000  sample            87293952.000                ns/op
+Bench1.benchCollect:p0.50    100000000  sample            97255424.000                ns/op
+Bench1.benchCollect:p0.90    100000000  sample           143130624.000                ns/op
+Bench1.benchCollect:p0.95    100000000  sample           148937113.600                ns/op
+Bench1.benchCollect:p0.99    100000000  sample           177479352.320                ns/op
+Bench1.benchCollect:p0.999   100000000  sample           199491584.000                ns/op
+Bench1.benchCollect:p0.9999  100000000  sample           199491584.000                ns/op
+Bench1.benchCollect:p1.00    100000000  sample           199491584.000                ns/op
